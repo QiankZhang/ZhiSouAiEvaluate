@@ -1,0 +1,832 @@
+<title>智搜评估操作指南</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="robots" content="noindex, nofollow" />
+<meta name="referrer" content="no-referrer" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Schibsted+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" />
+
+<style>
+  :root {
+    --paper: #fbfaf7;
+    --surface: #ffffff;
+    --surface-2: #f5f2ec;
+    --ink: #221d15;
+    --ink-soft: #4a4337;
+    --muted: #79705f;
+    --line: #e7e1d5;
+    --line-strong: #d8d0c0;
+    --accent: #c9700c;
+    --accent-ink: #c9700c;
+    --accent-strong: #a85a05;
+    --accent-soft: #f7ecdb;
+    --good: #2f8a58;
+    --good-soft: #e6f1e9;
+    --warn: #b5451b;
+    --warn-soft: #f6e7de;
+    --info: #3a5f8a;
+    --shadow: 0 1px 2px rgba(34, 29, 21, 0.04), 0 12px 32px -12px rgba(34, 29, 21, 0.14);
+    --radius: 14px;
+    --maxw: 760px;
+    font-family: "Schibsted Grotesk", -apple-system, BlinkMacSystemFont, "PingFang SC",
+      "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+  }
+  :root { --accent-ink: #c9700c; }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper: #16140f;
+      --surface: #1e1b15;
+      --surface-2: #262218;
+      --ink: #efeadd;
+      --ink-soft: #cbc3b1;
+      --muted: #9b9280;
+      --line: #322d22;
+      --line-strong: #40392c;
+      --accent: #e69a44;
+      --accent-ink: #e69a44;
+      --accent-strong: #f0b062;
+      --accent-soft: #33281a;
+      --good: #5cb98a;
+      --good-soft: #1e2c24;
+      --warn: #e08a5e;
+      --warn-soft: #2f2119;
+      --info: #7ea3cf;
+      --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 16px 40px -16px rgba(0, 0, 0, 0.55);
+    }
+  }
+  :root[data-theme="dark"] {
+    --paper: #16140f;
+    --surface: #1e1b15;
+    --surface-2: #262218;
+    --ink: #efeadd;
+    --ink-soft: #cbc3b1;
+    --muted: #9b9280;
+    --line: #322d22;
+    --line-strong: #40392c;
+    --accent: #e69a44;
+    --accent-ink: #e69a44;
+    --accent-strong: #f0b062;
+    --accent-soft: #33281a;
+    --good: #5cb98a;
+    --good-soft: #1e2c24;
+    --warn: #e08a5e;
+    --warn-soft: #2f2119;
+    --info: #7ea3cf;
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 16px 40px -16px rgba(0, 0, 0, 0.55);
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-size: 17px;
+    line-height: 1.72;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  ::selection { background: var(--accent-soft); }
+
+  a { color: var(--accent-ink); text-underline-offset: 3px; }
+
+  .page {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 0 32px 120px;
+  }
+
+  /* ---------- masthead ---------- */
+  .masthead {
+    padding: 76px 0 34px;
+    border-bottom: 1px solid var(--line);
+  }
+  .kicker {
+    font-size: 12px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--accent-ink);
+    font-weight: 600;
+    margin: 0 0 18px;
+  }
+  .masthead h1 {
+    font-size: clamp(2.4rem, 5.5vw, 3.6rem);
+    line-height: 1.06;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    margin: 0 0 20px;
+    text-wrap: balance;
+  }
+  .masthead .lede {
+    font-size: 1.2rem;
+    color: var(--ink-soft);
+    max-width: 640px;
+    margin: 0;
+  }
+  .meta-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px 22px;
+    margin-top: 30px;
+    font-size: 13.5px;
+    color: var(--muted);
+  }
+  .meta-row span { display: inline-flex; align-items: center; gap: 7px; }
+  .meta-row .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
+
+  /* ---------- layout ---------- */
+  .shell {
+    display: grid;
+    grid-template-columns: 210px minmax(0, 1fr);
+    gap: 72px;
+    margin-top: 56px;
+  }
+  @media (max-width: 1000px) {
+    .shell { grid-template-columns: 1fr; gap: 0; }
+    .toc { display: none; }
+  }
+
+  .toc {
+    position: sticky;
+    top: 28px;
+    align-self: start;
+    height: max-content;
+    font-size: 14px;
+  }
+  .toc-label {
+    font-size: 11px;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin: 0 0 14px;
+    font-weight: 600;
+  }
+  .toc ol { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+  .toc a {
+    display: flex;
+    gap: 10px;
+    padding: 7px 10px;
+    border-radius: 8px;
+    color: var(--ink-soft);
+    text-decoration: none;
+    border-left: 2px solid transparent;
+    transition: background 0.15s, color 0.15s;
+  }
+  .toc a:hover { background: var(--surface-2); color: var(--ink); }
+  .toc a.active { color: var(--accent-ink); border-left-color: var(--accent); background: var(--accent-soft); font-weight: 600; }
+  .toc a .n { font-variant-numeric: tabular-nums; color: var(--muted); font-family: "IBM Plex Mono", monospace; font-size: 12px; }
+  .toc a.active .n { color: var(--accent-ink); }
+
+  main { min-width: 0; max-width: var(--maxw); }
+
+  /* ---------- prose ---------- */
+  section { padding-top: 68px; scroll-margin-top: 24px; }
+  section > h2 {
+    font-size: 1.9rem;
+    font-weight: 700;
+    letter-spacing: -0.015em;
+    margin: 8px 0 0;
+    text-wrap: balance;
+  }
+  .sec-eyebrow {
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 12.5px;
+    letter-spacing: 0.08em;
+    color: var(--accent-ink);
+    text-transform: uppercase;
+  }
+  section > h3 {
+    font-size: 1.16rem;
+    font-weight: 600;
+    margin: 44px 0 4px;
+    letter-spacing: -0.01em;
+  }
+  p { margin: 16px 0; }
+  main p { max-width: 66ch; }
+  strong { font-weight: 600; }
+  code {
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 0.86em;
+    background: var(--surface-2);
+    border: 1px solid var(--line);
+    padding: 0.08em 0.4em;
+    border-radius: 5px;
+    color: var(--ink-soft);
+  }
+
+  .intro-lede { font-size: 1.12rem; color: var(--ink-soft); }
+
+  /* ---------- figure ---------- */
+  figure {
+    margin: 30px 0 12px;
+    border: 1px solid var(--line-strong);
+    border-radius: var(--radius);
+    overflow: hidden;
+    background: var(--surface-2);
+    box-shadow: var(--shadow);
+  }
+  @media (min-width: 1180px) {
+    figure { width: calc(100% + 168px); margin-left: -84px; }
+    figure.tight { width: calc(100% + 90px); margin-left: -45px; }
+  }
+  figure img { display: block; width: 100%; height: auto; }
+  figcaption {
+    font-size: 13px;
+    color: var(--muted);
+    padding: 11px 16px;
+    border-top: 1px solid var(--line);
+    background: var(--surface);
+    display: flex;
+    gap: 9px;
+    align-items: baseline;
+  }
+  figcaption b {
+    color: var(--accent-ink);
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 11.5px;
+    letter-spacing: 0.04em;
+    font-weight: 500;
+    white-space: nowrap;
+  }
+
+  /* ---------- steps ---------- */
+  ol.steps { counter-reset: step; list-style: none; margin: 20px 0; padding: 0; }
+  ol.steps > li {
+    counter-increment: step;
+    position: relative;
+    padding: 3px 0 20px 46px;
+    border-left: 1.5px solid var(--line-strong);
+    margin-left: 13px;
+  }
+  ol.steps > li:last-child { border-left-color: transparent; padding-bottom: 0; }
+  ol.steps > li::before {
+    content: counter(step);
+    position: absolute;
+    left: -13px;
+    top: 0;
+    width: 26px;
+    height: 26px;
+    background: var(--accent);
+    color: #fff;
+    border-radius: 50%;
+    display: grid;
+    place-items: center;
+    font-size: 12.5px;
+    font-weight: 600;
+    font-family: "IBM Plex Mono", monospace;
+  }
+  :root[data-theme="dark"] ol.steps > li::before { color: #1a1610; }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) ol.steps > li::before { color: #1a1610; }
+  }
+  ol.steps > li p { margin: 0 0 6px; }
+  ol.steps > li p:first-child { font-weight: 500; }
+
+  /* ---------- callout ---------- */
+  .note {
+    margin: 24px 0;
+    padding: 16px 18px 16px 20px;
+    border-radius: 10px;
+    background: var(--surface-2);
+    border-left: 3px solid var(--accent);
+    font-size: 15px;
+    color: var(--ink-soft);
+  }
+  .note.warn { border-left-color: var(--warn); background: var(--warn-soft); }
+  .note.good { border-left-color: var(--good); background: var(--good-soft); }
+  .note .note-t {
+    display: block;
+    font-weight: 600;
+    color: var(--ink);
+    font-size: 13px;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+    margin-bottom: 4px;
+  }
+  .note p { margin: 6px 0 0; max-width: none; }
+  .note p:first-of-type { margin-top: 0; }
+
+  /* ---------- table ---------- */
+  .tbl-wrap { overflow-x: auto; margin: 22px 0; border: 1px solid var(--line); border-radius: 10px; }
+  table.ref { border-collapse: collapse; width: 100%; font-size: 14.5px; min-width: 440px; }
+  table.ref th, table.ref td { text-align: left; padding: 11px 15px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  table.ref thead th {
+    background: var(--surface-2);
+    font-size: 12px;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--muted);
+    font-weight: 600;
+  }
+  table.ref tbody tr:last-child td { border-bottom: none; }
+  table.ref td:first-child { white-space: nowrap; font-weight: 500; }
+  table.ref .req { color: var(--warn); font-weight: 600; }
+
+  /* ---------- pills ---------- */
+  .pill {
+    display: inline-block;
+    font-size: 12px;
+    font-weight: 600;
+    padding: 2px 9px;
+    border-radius: 999px;
+    border: 1px solid var(--line-strong);
+    color: var(--ink-soft);
+    background: var(--surface);
+    white-space: nowrap;
+    line-height: 1.7;
+  }
+  .pill.good { color: var(--good); border-color: var(--good); background: var(--good-soft); }
+  .pill.warn { color: var(--warn); border-color: var(--warn); background: var(--warn-soft); }
+  .pill.accent { color: var(--accent-ink); border-color: var(--accent); background: var(--accent-soft); }
+
+  /* ---------- flow diagram ---------- */
+  .flow {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: stretch;
+    gap: 10px;
+    margin: 28px 0 8px;
+  }
+  .flow .node {
+    flex: 1 1 130px;
+    background: var(--surface);
+    border: 1px solid var(--line-strong);
+    border-radius: 11px;
+    padding: 14px 15px;
+    position: relative;
+  }
+  .flow .node .step-n {
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 11px;
+    color: var(--accent-ink);
+    letter-spacing: 0.08em;
+  }
+  .flow .node .step-title { font-weight: 600; font-size: 15px; margin-top: 3px; }
+  .flow .node .step-d { font-size: 12.5px; color: var(--muted); margin-top: 3px; line-height: 1.5; }
+  .flow .arrow { align-self: center; color: var(--line-strong); font-size: 20px; flex: 0 0 auto; }
+  @media (max-width: 620px) {
+    .flow { flex-direction: column; }
+    .flow .arrow { transform: rotate(90deg); align-self: flex-start; margin-left: 20px; }
+  }
+
+  /* ---------- two-mechanism card ---------- */
+  .mech-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 24px 0; }
+  @media (max-width: 620px) { .mech-grid { grid-template-columns: 1fr; } }
+  .mech {
+    border: 1px solid var(--line-strong);
+    border-radius: 12px;
+    padding: 18px 18px 20px;
+    background: var(--surface);
+  }
+  .mech h4 { margin: 0 0 4px; font-size: 15.5px; font-weight: 600; }
+  .mech .tag { font-family: "IBM Plex Mono", monospace; font-size: 11px; color: var(--muted); }
+  .mech ul { margin: 12px 0 0; padding-left: 18px; font-size: 14px; color: var(--ink-soft); }
+  .mech li { margin: 5px 0; }
+
+  hr.rule { border: none; border-top: 1px solid var(--line); margin: 0; }
+
+  footer.foot {
+    margin-top: 90px;
+    padding-top: 28px;
+    border-top: 1px solid var(--line);
+    font-size: 13.5px;
+    color: var(--muted);
+    max-width: var(--maxw);
+  }
+
+</style>
+
+<div class="page">
+  <header class="masthead">
+    <p class="kicker">操作指南 · Operation Guide</p>
+    <h1>智搜评估系统操作指南</h1>
+    <p class="lede">从准备样本到产出评估报告的完整路径——面向策略、算法与产品同学的自助评估手册。</p>
+    <div class="meta-row">
+      <span><i class="dot"></i>适用范围：数据集管理 / 评估基准管理 / 评估任务管理 / 数据概览</span>
+      <span><i class="dot"></i>角色理念：人工定标准 · AI 做执行 · 人工兜置信</span>
+    </div>
+  </header>
+
+  <div class="shell">
+    <nav class="toc" aria-label="目录">
+      <p class="toc-label">目录</p>
+      <ol>
+        <li><a href="#start"><span class="n">00</span><span>开始之前</span></a></li>
+        <li><a href="#datasets"><span class="n">01</span><span>数据集管理</span></a></li>
+        <li><a href="#benchmarks"><span class="n">02</span><span>评估基准管理</span></a></li>
+        <li><a href="#tasks"><span class="n">03</span><span>评估任务管理</span></a></li>
+        <li><a href="#overview"><span class="n">04</span><span>评估数据概览</span></a></li>
+      </ol>
+    </nav>
+
+    <main>
+      <!-- ============ 00 ============ -->
+      <section id="start" class="reveal">
+        <span class="sec-eyebrow">00 — Before you start</span>
+        <h2>开始之前</h2>
+        <p class="intro-lede">
+          智搜评估系统用来衡量「智搜」策略调整后的效果：把一批真实查询与智搜的回答喂给
+          <strong>AI 裁判员模型</strong>按既定标准打分，再由人工复核兜底，最后自动汇总成评估报告。
+        </p>
+
+        <h3>三样东西凑齐，才能跑一次评估</h3>
+        <div class="flow">
+          <div class="node">
+            <div class="step-n">01</div>
+            <div class="step-title">数据集</div>
+            <div class="step-d">要评的样本：查询、智搜回答，GSB 还要基线回答</div>
+          </div>
+          <div class="arrow">→</div>
+          <div class="node">
+            <div class="step-n">02</div>
+            <div class="step-title">评估基准</div>
+            <div class="step-d">打分标准：维度权重 / 判定规则，用提示词或技能表达</div>
+          </div>
+          <div class="arrow">→</div>
+          <div class="node">
+            <div class="step-n">03</div>
+            <div class="step-title">评估任务</div>
+            <div class="step-d">把数据集 + 基准 + 裁判员模型绑在一起执行</div>
+          </div>
+          <div class="arrow">→</div>
+          <div class="node">
+            <div class="step-n">04</div>
+            <div class="step-title">评估报告</div>
+            <div class="step-d">AI 打分 → 人工复核 → 自动生成五段式报告</div>
+          </div>
+        </div>
+
+        <h3>两种评估机制（贯穿全系统）</h3>
+        <p>
+          系统底层只有两种打分机制，它决定数据集的必需列、基准的配置项、报告的呈现方式。
+          机制的<strong>显示名称可以自定义</strong>（如把「多维度」改叫「语义相似度评估」），但底层仍是这两种之一。
+        </p>
+        <div class="mech-grid">
+          <div class="mech">
+            <h4>多维度　<span class="tag">MULTI_DIM</span></h4>
+            <p style="margin:6px 0 0;font-size:14px;color:var(--muted)">按若干维度加权打分，每维 1–5 分。</p>
+            <ul>
+              <li>必需列：<code>query</code>、<code>content</code></li>
+              <li>基准里配「维度 + 权重」，权重合计需 = 100%</li>
+              <li>报告给出各维度均值、低分占比、总分分布</li>
+            </ul>
+          </div>
+          <div class="mech">
+            <h4>GSB 对比　<span class="tag">GSB</span></h4>
+            <p style="margin:6px 0 0;font-size:14px;color:var(--muted)">实验对象 vs 基线对象，逐条判 Good / Same / Bad。</p>
+            <ul>
+              <li>必需列：<code>query</code>、<code>content</code>、<code>baseline</code></li>
+              <li>基准里配「判定规则 + 裁决维度」</li>
+              <li>报告给出 G∶S∶B、胜率、净胜率 =（G−B）/（G+S+B）</li>
+            </ul>
+          </div>
+        </div>
+
+        <h3>导航与角色</h3>
+        <p>
+          左侧边栏进入四大工作台：<span class="pill">数据概览</span>
+          <span class="pill">评估中心</span>（即评估任务管理）
+          <span class="pill">数据集</span>
+          <span class="pill">评估基准</span>。
+          「数据源连接」标注 <span class="pill">待开发</span>，暂不可用。
+        </p>
+        <div class="note">
+          <span class="note-t">协同分工</span>
+          <p><strong>人工定标准</strong>——由你设计数据集与评估基准；<strong>AI 做执行</strong>——裁判员模型逐条打分；<strong>人工兜置信</strong>——你在任务详情里逐条复核，通过或调整后报告才最终定稿。</p>
+        </div>
+      </section>
+
+      <hr class="rule" />
+
+      <!-- ============ 01 数据集 ============ -->
+      <section id="datasets" class="reveal">
+        <span class="sec-eyebrow">01 — Datasets</span>
+        <h2>数据集管理</h2>
+        <p>
+          数据集是一批待评样本的集合。进入侧边栏<strong>「数据集」</strong>查看全部数据集，
+          支持按名称 / ID 搜索，按<strong>来源</strong>（文件上传 / 示例生成 / 数据库直连）、
+          <strong>创建人</strong>、<strong>创建时间</strong>筛选。
+        </p>
+
+        <figure>
+          <img src="assets/10-datasets-list.jpg" alt="数据集列表页" />
+          <figcaption><b>图 1.1</b><span>数据集列表——每行展示评估方式、来源、字数、条数与引用情况；右上角「创建数据集」。</span></figcaption>
+        </figure>
+
+        <h3>创建数据集</h3>
+        <p>点击右上角<strong>「创建数据集」</strong>，在弹窗中填写并上传文件。</p>
+        <ol class="steps">
+          <li><p>填写<strong>数据集名称</strong>（必填，≤ 50 字）与<strong>数据集描述</strong>（选填，≤ 200 字）。</p></li>
+          <li>
+            <p>选择<strong>评估方式</strong>。它决定必需列——多维度机制需 <code>query</code> / <code>content</code>；GSB 机制额外需 <code>baseline</code>。</p>
+            <p>下拉底部的<strong>「+ 新增评估方式…」</strong>可自定义一个显示名称，并指定它属于「多维度机制」还是「GSB 机制」。</p>
+          </li>
+          <li>
+            <p>点<strong>「下载标准模板」</strong>拿到对应机制的 CSV 表头，或点<strong>「查看数据集样例」</strong>直接在弹窗里预览字段格式。</p>
+          </li>
+          <li>
+            <p>把整理好的文件拖入上传区，或点击选择。支持 <code>CSV / JSON / JSONL / XLSX</code>，单文件 ≤ 50 MB。</p>
+          </li>
+          <li>
+            <p>点<strong>「保存」</strong>。若某些行缺少必需列，弹窗会按<strong>「第 N 行：原因」</strong>逐条列出错误，修正后重新上传即可。</p>
+          </li>
+        </ol>
+
+        <figure>
+          <img src="assets/11-dataset-create.jpg" alt="创建数据集弹窗" />
+          <figcaption><b>图 1.2</b><span>创建数据集弹窗——名称、描述、评估方式，以及模板下载 / 样例查看 / 文件上传区。</span></figcaption>
+        </figure>
+        <figure class="tight">
+          <img src="assets/12-dataset-create-sample.jpg" alt="查看数据集样例" />
+          <figcaption><b>图 1.3</b><span>「查看数据集样例」展开后，直接看到 query / content（GSB 再加 baseline）的示例行。</span></figcaption>
+        </figure>
+
+        <div class="tbl-wrap">
+          <table class="ref">
+            <thead><tr><th>字段</th><th>说明</th><th>约束</th></tr></thead>
+            <tbody>
+              <tr><td>数据集名称 <span class="req">必填</span></td><td>列表与选择器中显示的名称</td><td>≤ 50 字</td></tr>
+              <tr><td>数据集描述</td><td>用途与范围说明</td><td>≤ 200 字</td></tr>
+              <tr><td>评估方式 <span class="req">必填</span></td><td>决定必需列与后续可匹配的基准</td><td>多维度机制 / GSB 机制</td></tr>
+              <tr><td>数据文件 <span class="req">必填</span></td><td>样本内容</td><td>CSV / JSON / JSONL / XLSX，≤ 50 MB</td></tr>
+              <tr><td><code>query</code></td><td>用户查询</td><td>两种机制都必需</td></tr>
+              <tr><td><code>content</code></td><td>智搜回答（实验对象）</td><td>两种机制都必需</td></tr>
+              <tr><td><code>baseline</code></td><td>基线回答（对照对象）</td><td>仅 GSB 机制必需</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>查看与维护</h3>
+        <p>
+          点数据集名称进入详情页：上方是<strong>基本信息</strong>（条数、字数、创建人、时间）与
+          <strong>被引用任务</strong>列表，下方是<strong>样本预览</strong>（仅展示前若干条，GSB 会多出「基线内容」列）。
+          列表页每行操作区可<strong>下载</strong>原始文件或<strong>删除</strong>。
+        </p>
+        <figure>
+          <img src="assets/13-dataset-detail.jpg" alt="数据集详情页" />
+          <figcaption><b>图 1.4</b><span>数据集详情——基本信息、被引用任务、样本预览三段式。</span></figcaption>
+        </figure>
+        <div class="note warn">
+          <span class="note-t">删除限制</span>
+          <p>只要数据集<strong>正被任意评估任务引用</strong>，删除按钮即不可用。需先删除或改绑相关任务，才能删除该数据集。</p>
+        </div>
+      </section>
+
+      <hr class="rule" />
+
+      <!-- ============ 02 评估基准 ============ -->
+      <section id="benchmarks" class="reveal">
+        <span class="sec-eyebrow">02 — Benchmarks</span>
+        <h2>评估基准管理</h2>
+        <p>
+          评估基准 = 一套<strong>可复用的打分标准</strong>。进入侧边栏<strong>「评估基准」</strong>，
+          可按<strong>评估类型</strong>（提示词类型 / 技能 Skill）、<strong>评估方式</strong>（多维度 / GSB）、创建人筛选。
+          每个基准带<strong>版本号</strong>与<strong>状态</strong>（已验证 / 未验证），以及被任务引用的<strong>使用次数</strong>。
+        </p>
+
+        <figure>
+          <img src="assets/20-benchmarks-list.jpg" alt="评估基准列表" />
+          <figcaption><b>图 2.1</b><span>评估基准列表——类型、方式、版本、验证状态、使用次数一览；行内可查看 / 编辑 / 复制 / 删除。</span></figcaption>
+        </figure>
+
+        <h3>创建评估基准（两步向导）</h3>
+        <p><strong>第一步 · 基础信息</strong></p>
+        <ol class="steps">
+          <li><p>填写<strong>基准名称</strong>（必填，≤ 50 字）与<strong>基准描述</strong>（选填，≤ 200 字）。</p></li>
+          <li>
+            <p>选择<strong>评估类型</strong>：</p>
+            <p><span class="pill accent">提示词类型</span> 用提示词编辑器 + 变量面板表达标准；<span class="pill accent">技能 Skill</span> 使用符合 Anthropic Agent Skills 规范的技能包。</p>
+          </li>
+          <li><p>选择<strong>评估方式</strong>（多维度机制 / GSB 机制，同样支持「+ 新增评估方式」自定义显示名）。点<strong>「下一步」</strong>。</p></li>
+        </ol>
+
+        <figure>
+          <img src="assets/21-benchmark-create-step1.jpg" alt="创建评估基准 步骤一" />
+          <figcaption><b>图 2.2</b><span>步骤一「基础信息」——名称、描述、评估类型、评估方式。</span></figcaption>
+        </figure>
+
+        <p><strong>第二步 · 指令配置</strong>（内容随「评估类型 × 评估方式」变化）</p>
+        <ol class="steps">
+          <li>
+            <p><strong>提示词类型：</strong>在<strong>提示词编辑框</strong>写评测指令，可从变量面板插入
+            <code>{query}</code> <code>{待评内容}</code> <code>{维度}</code> <code>{评分标准}</code>（GSB 另有 <code>{基线内容}</code>）。
+            维度、权重、评分标准、判定规则都直接写在提示词里。下方<strong>标准输出格式</strong>展示裁判员模型应返回的 JSON 结构。</p>
+          </li>
+          <li>
+            <p><strong>技能 Skill：</strong>选<strong>技能来源</strong>——「内置技能」（<code>multi-dimension-evaluation</code> / <code>gsb-evaluation</code>，随平台维护），
+            或「上传技能包」（<code>.zip</code> 根目录含 <code>SKILL.md</code>，或单个 <code>SKILL.md</code>，≤ 10 MB）。上传后系统解析并展示技能名称、版本、许可证与说明。</p>
+          </li>
+          <li>
+            <p>按需勾选<strong>「输出结果附带置信度字段」</strong>。</p>
+          </li>
+          <li>
+            <p><strong>多维度机制：</strong>在<strong>维度与权重</strong>区增删维度、填写权重，底部实时显示合计，<strong>必须等于 100%</strong>才能保存。</p>
+            <p><strong>GSB 机制：</strong>填写<strong>判定规则</strong>（≤ 200 字）与<strong>裁决维度</strong>（如 <code>overall</code> / <code>relevance</code>）；数据集里的 <code>baseline</code> 即基线对象。</p>
+          </li>
+          <li><p>点<strong>「保存」</strong>。</p></li>
+        </ol>
+
+        <figure>
+          <img src="assets/22-benchmark-create-step2.jpg" alt="创建评估基准 步骤二" />
+          <figcaption><b>图 2.3</b><span>步骤二「指令配置」（提示词 × 多维度）——提示词编辑框、变量面板、标准输出格式、维度与权重。</span></figcaption>
+        </figure>
+
+        <div class="tbl-wrap">
+          <table class="ref">
+            <thead><tr><th>配置项</th><th>提示词类型</th><th>技能 Skill</th></tr></thead>
+            <tbody>
+              <tr><td>标准表达</td><td>提示词编辑框 + 变量面板</td><td>内置技能，或上传 SKILL.md / .zip</td></tr>
+              <tr><td>多维度机制</td><td colspan="2">维度与权重区，权重合计 = 100%</td></tr>
+              <tr><td>GSB 机制</td><td colspan="2">判定规则 + 裁决维度；baseline 作基线</td></tr>
+              <tr><td>置信度</td><td colspan="2">勾选「输出结果附带置信度字段」</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>查看与维护</h3>
+        <p>
+          点基准名称进入详情页，按配置类型分别展示<strong>维度与权重</strong> / <strong>GSB 判定规则</strong> /
+          <strong>技能 Skill 详情</strong> / <strong>提示词全文</strong>，以及<strong>被引用任务</strong>。
+          行内 / 详情页均可<strong>编辑</strong>、<strong>复制</strong>（生成新基准便于微调）、<strong>删除</strong>。
+        </p>
+        <figure>
+          <img src="assets/23-benchmark-detail.jpg" alt="评估基准详情" />
+          <figcaption><b>图 2.4</b><span>评估基准详情（技能 × 多维度）——维度权重条 + 技能包元信息与指令全文。</span></figcaption>
+        </figure>
+        <div class="note warn">
+          <span class="note-t">删除限制</span>
+          <p>使用次数 &gt; 0（正被任务引用）的基准无法删除。可先<strong>复制</strong>一份作为新版本迭代，旧版本留给历史任务。</p>
+        </div>
+      </section>
+
+      <hr class="rule" />
+
+      <!-- ============ 03 评估任务 ============ -->
+      <section id="tasks" class="reveal">
+        <span class="sec-eyebrow">03 — Evaluation tasks</span>
+        <h2>评估任务管理</h2>
+        <p>
+          侧边栏<strong>「评估中心」</strong>即评估任务管理。列表展示每个任务的
+          <strong>状态</strong>、评估方式、所用基准、样本量与进度，可按任务名 / ID 搜索，
+          按状态、评估方式、任务类型、裁判员模型筛选。
+        </p>
+        <div class="tbl-wrap">
+          <table class="ref">
+            <thead><tr><th>状态</th><th>含义</th><th>可用操作</th></tr></thead>
+            <tbody>
+              <tr><td><span class="pill">未开始</span></td><td>已创建、尚未执行</td><td>执行评测 · 编辑 · 复制 · 删除</td></tr>
+              <tr><td><span class="pill accent">执行中</span></td><td>裁判员模型正在逐条打分</td><td>停止</td></tr>
+              <tr><td><span class="pill good">已完成</span></td><td>打分完成，待 / 已复核</td><td>查看报告 · 复制任务 · 下载测试集 · 删除</td></tr>
+              <tr><td><span class="pill">已停止</span></td><td>执行中被手动停止</td><td>执行评测（继续）· 编辑 · 复制 · 删除</td></tr>
+              <tr><td><span class="pill warn">执行失败</span></td><td>执行异常终止</td><td>重试 · 编辑 · 查看失败原因</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <figure>
+          <img src="assets/30-tasks-list.jpg" alt="评估中心任务列表" />
+          <figcaption><b>图 3.1</b><span>评估中心——顶部「三步引导」条：数据准备 → AI评测 → 人工复核 → 报告。</span></figcaption>
+        </figure>
+
+        <h3>第 1 步 · 创建任务</h3>
+        <ol class="steps">
+          <li><p>点右上角<strong>「创建评测任务」</strong>。填写<strong>任务名称</strong>（必填，≤ 50 字）、<strong>任务描述</strong>（选填，≤ 50 字）。</p></li>
+          <li><p>填<strong>任务类型</strong>（自由文本，输入过的会进联想；默认建议「通用评估」「博文分析」）——仅用于数据概览的类型统计。</p></li>
+          <li>
+            <p>选<strong>评估基准</strong>（必填）。<strong>评估方式由基准隐式决定</strong>，并据此过滤下方可选数据集。</p>
+          </li>
+          <li>
+            <p>选<strong>评测数据</strong>（必填，只列出与基准同机制的数据集）。也可点<strong>「创建新数据集」</strong>就地新建。</p>
+          </li>
+          <li>
+            <p>选<strong>AI 裁判员模型</strong>（必填）。默认 <code>deepseek-v4-flash</code>（DeepSeek Flash，真实调用）。</p>
+          </li>
+          <li>
+            <p>弹窗底部给出<strong>预估</strong>：字数、token、耗时、成本。确认后点<strong>「创建任务」</strong>。</p>
+          </li>
+        </ol>
+        <figure>
+          <img src="assets/31-task-create.jpg" alt="创建评测任务弹窗" />
+          <figcaption><b>图 3.2</b><span>创建评测任务——基准决定评估方式，数据集随之过滤；裁判员模型默认 DeepSeek Flash。</span></figcaption>
+        </figure>
+
+        <h3>第 2 步 · 执行评测</h3>
+        <p>
+          在列表或任务详情点<strong>「执行评测」</strong>，任务转入<span class="pill accent">执行中</span>，
+          详情页显示实时进度条（已完成 / 总样本）。需要时可<strong>「停止」</strong>；执行失败时点<strong>「重试」</strong>，
+          并在详情页顶部查看<strong>失败原因</strong>。
+        </p>
+        <div class="note">
+          <span class="note-t">进度四段</span>
+          <p>任务详情顶部的步骤条对应：<strong>数据准备 → AI评测 → 人工复核 → 报告</strong>。统计行会显示样本量、预估字数、预估 / 实际成本、预估耗时、<strong>评测引擎</strong>（真实调用 / 模拟，或「部分降级」）与复核进度。</p>
+        </div>
+
+        <h3>第 3 步 · 人工复核</h3>
+        <p>
+          打分完成后，在任务详情的<strong>「评测结果」</strong>表逐条复核。每行给出样本 Query、评分（多维度总分及各维分；GSB 为 Good/Same/Bad 及双方总分）与理由。
+        </p>
+        <ol class="steps">
+          <li><p>认可 AI 判分——点该行<strong>「通过」</strong>。</p></li>
+          <li>
+            <p>需要修正——点<strong>「调整」</strong>：多维度可改各维 1–5 分（总分自动按权重重算）；GSB 可改判定结果；并填写<strong>复核说明</strong>。保存后该行标记<span class="pill accent">已调整</span>。</p>
+          </li>
+          <li><p>批量处理——点表头<strong>「全部通过（N）」</strong>一次通过所有待复核行。</p></li>
+          <li>
+            <p>所有行复核完毕后，复核状态转为<strong>已复核</strong>，系统<strong>自动跳转到评估报告页</strong>。</p>
+          </li>
+        </ol>
+        <figure>
+          <img src="assets/32-task-detail.jpg" alt="任务详情 待复核" />
+          <figcaption><b>图 3.3</b><span>任务详情（已完成 · 待复核）——每行「通过 / 调整」，表头「全部通过」，底部提示报告为初步统计。</span></figcaption>
+        </figure>
+
+        <h3>第 4 步 · 阅读评估报告</h3>
+        <p>报告页按固定五段式组织，与可导出的 Markdown 结构一一对应：</p>
+        <div class="tbl-wrap">
+          <table class="ref">
+            <thead><tr><th>章节</th><th>多维度</th><th>GSB</th></tr></thead>
+            <tbody>
+              <tr><td>一　整体结论</td><td>最弱 / 最强维度、全链路判断</td><td>整体强弱于基线，G∶S∶B 速览</td></tr>
+              <tr><td>二 / 三　专项分析</td><td>三　分维度问题分析：各维均值、低分占比、总分分布</td><td>二　GSB 专项评估：Good/Same/Bad、胜率、净胜率</td></tr>
+              <tr><td>四　典型错误 case</td><td colspan="2">按错误类型聚合 + 2~3 个典型 case 详评（原始 Query、问题定位、原文问题片段）</td></tr>
+              <tr><td>五　改进建议</td><td colspan="2">对应共性短板的可落地建议</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p>
+          页面右上角可<strong>复制 Markdown</strong>、<strong>下载 Markdown</strong>、<strong>下载 Excel</strong>（原始打分表）。
+          报告下方还有<strong>逐样本明细</strong>表与可展开的 <strong>Markdown 源码</strong>。
+          若人工复核尚未完成，报告顶部会提示「初步统计，复核结果确认后同步更新」。
+        </p>
+        <figure>
+          <img src="assets/33-task-report.jpg" alt="评估报告页" />
+          <figcaption><b>图 3.4</b><span>评估报告（GSB 示例）——整体结论 + GSB 专项评估 + 典型错误 case 分析。</span></figcaption>
+        </figure>
+        <div class="note good">
+          <span class="note-t">复用与追溯</span>
+          <p>已完成任务可<strong>「复制任务」</strong>快速发起回归；<strong>「下载测试集 / 评估测试集」</strong>导出逐样本打分明细（CSV）。任务详情头部始终显示所用基准、数据集、裁判员模型与引擎，便于追溯。</p>
+        </div>
+      </section>
+
+      <hr class="rule" />
+
+      <!-- ============ 04 概览 ============ -->
+      <section id="overview" class="reveal">
+        <span class="sec-eyebrow">04 — Overview</span>
+        <h2>评估数据概览</h2>
+        <p>
+          侧边栏<strong>「数据概览」</strong>是全局监控视图，进入系统的默认落地页。
+          右上角切换时间范围：<span class="pill">今日</span> <span class="pill">近7天</span>
+          <span class="pill">近30天</span> <span class="pill">自定义</span>（选自定义后需指定起止日期，指标才会加载）。
+        </p>
+
+        <figure>
+          <img src="assets/01-overview.jpg" alt="数据概览首页" />
+          <figcaption><b>图 4.1</b><span>数据概览——四张核心指标卡 + 评估量趋势柱状图 + 任务类型分布。</span></figcaption>
+        </figure>
+
+        <div class="tbl-wrap">
+          <table class="ref">
+            <thead><tr><th>区块</th><th>内容</th></tr></thead>
+            <tbody>
+              <tr><td>核心指标卡</td><td>所选区间的评估量（条）、已完成任务（个）、执行中任务（个）、已评测样本（条）</td></tr>
+              <tr><td>评估量趋势</td><td>按样本条数的每日柱状图，标注区间起止日期</td></tr>
+              <tr><td>任务类型分布</td><td>按任务创建时填写的「任务类型」聚合占比（如通用评估 / 博文分析）</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="note">
+          <span class="note-t">让统计更准</span>
+          <p>概览的「任务类型分布」直接取自创建任务时填写的<strong>任务类型</strong>字段。团队约定统一的类型命名（并善用输入联想），分布图才有参考价值。</p>
+        </div>
+      </section>
+
+      <footer class="foot">
+        <p>本指南依据当前线上界面整理，涉及页面：数据概览、评估中心（任务）、数据集、评估基准。界面文案与按钮以系统实际显示为准。</p>
+      </footer>
+    </main>
+  </div>
+</div>
+
+<script>
+  (function () {
+    var links = Array.prototype.slice.call(document.querySelectorAll('.toc a'));
+    var map = {};
+    links.forEach(function (a) { map[a.getAttribute('href').slice(1)] = a; });
+    var sections = Array.prototype.slice.call(document.querySelectorAll('main section'));
+
+    if ('IntersectionObserver' in window) {
+      var spy = new IntersectionObserver(function (entries) {
+        entries.forEach(function (e) {
+          if (e.isIntersecting) {
+            links.forEach(function (l) { l.classList.remove('active'); });
+            var a = map[e.target.id];
+            if (a) a.classList.add('active');
+          }
+        });
+      }, { rootMargin: '-10% 0px -75% 0px' });
+      sections.forEach(function (s) { spy.observe(s); });
+
+    }
+  })();
+</script>
