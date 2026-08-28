@@ -1,0 +1,11 @@
+{
+  "schema_version": "1.0",
+  "project_id": "prj_01m0sf67nhx33py3wavrqyejrj",
+  "runtime_profile": "react-fastapi",
+  "overrides": {
+    "frontend_dir": "frontend",
+    "backend_dir": "backend",
+    "python_entrypoint": "backend.main:app"
+  },
+  "required_env": []
+}

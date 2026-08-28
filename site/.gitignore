@@ -1,0 +1,9 @@
+node_modules/
+dist/
+__pycache__/
+.DS_Store
+.wegent/build-manifest.json
+.env
+.venv/
+backend/reports/
+backend/data/
