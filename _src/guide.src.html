@@ -400,9 +400,9 @@
   <header class="masthead">
     <p class="kicker">操作指南 · Operation Guide</p>
     <h1>智搜评估系统操作指南</h1>
-    <p class="lede">从准备样本到产出评估报告的完整路径——面向策略、算法与产品同学的自助评估手册。</p>
+    <p class="lede">从登录到产出评估报告的完整路径——涵盖 AI 评估中心与人工评估中心两条主线，面向策略、算法与产品同学的自助评估手册。</p>
     <div class="meta-row">
-      <span><i class="dot"></i>适用范围：数据集管理 / 评估基准管理 / 评估任务管理 / 数据概览</span>
+      <span><i class="dot"></i>模块：数据集 / 评估基准 / 评估报告模板 / AI 评估任务 / 人工评估中心 / 数据概览</span>
       <span><i class="dot"></i>角色理念：人工定标准 · AI 做执行 · 人工兜置信</span>
     </div>
   </header>
@@ -414,47 +414,46 @@
         <li><a href="#start"><span class="n">00</span><span>开始之前</span></a></li>
         <li><a href="#datasets"><span class="n">01</span><span>数据集管理</span></a></li>
         <li><a href="#benchmarks"><span class="n">02</span><span>评估基准管理</span></a></li>
-        <li><a href="#tasks"><span class="n">03</span><span>评估任务管理</span></a></li>
-        <li><a href="#overview"><span class="n">04</span><span>评估数据概览</span></a></li>
+        <li><a href="#report-templates"><span class="n">03</span><span>评估报告模板</span></a></li>
+        <li><a href="#tasks"><span class="n">04</span><span>AI 评估任务</span></a></li>
+        <li><a href="#manual"><span class="n">05</span><span>人工评估中心</span></a></li>
+        <li><a href="#overview"><span class="n">06</span><span>数据概览</span></a></li>
+        <li><a href="#account"><span class="n">07</span><span>账号与组织</span></a></li>
       </ol>
     </nav>
 
     <main>
       <!-- ============ 00 ============ -->
-      <section id="start" class="reveal">
+      <section id="start">
         <span class="sec-eyebrow">00 — Before you start</span>
         <h2>开始之前</h2>
         <p class="intro-lede">
-          智搜评估系统用来衡量「智搜」策略调整后的效果：把一批真实查询与智搜的回答喂给
-          <strong>AI 裁判员模型</strong>按既定标准打分，再由人工复核兜底，最后自动汇总成评估报告。
+          智搜评估系统用来衡量「智搜」策略调整后的效果。系统提供两条评估主线——
+          <strong>AI 评估中心</strong>（裁判员模型按既定标准逐条打分 + 人工复核）与
+          <strong>人工评估中心</strong>（纯人工逐条标注），两者都以自动汇总的评估报告收尾。
         </p>
 
-        <h3>三样东西凑齐，才能跑一次评估</h3>
-        <div class="flow">
-          <div class="node">
-            <div class="step-n">01</div>
-            <div class="step-title">数据集</div>
-            <div class="step-d">要评的样本：查询、智搜回答，GSB 还要基线回答</div>
-          </div>
-          <div class="arrow">→</div>
-          <div class="node">
-            <div class="step-n">02</div>
-            <div class="step-title">评估基准</div>
-            <div class="step-d">打分标准：维度权重 / 判定规则，用提示词或技能表达</div>
-          </div>
-          <div class="arrow">→</div>
-          <div class="node">
-            <div class="step-n">03</div>
-            <div class="step-title">评估任务</div>
-            <div class="step-d">把数据集 + 基准 + 裁判员模型绑在一起执行</div>
-          </div>
-          <div class="arrow">→</div>
-          <div class="node">
-            <div class="step-n">04</div>
-            <div class="step-title">评估报告</div>
-            <div class="step-d">AI 打分 → 人工复核 → 自动生成五段式报告</div>
-          </div>
+        <h3>登录</h3>
+        <p>
+          打开系统即为登录页。<strong>账号</strong>为姓名的小写拼音，<strong>初始密码</strong>
+          为 <code>12345678</code>，登录后请尽快在账号菜单「修改密码」中更新。
+          所有数据归属于唯一组织<span class="pill">智搜产品</span>；
+          未加入组织的账号无法查看任何数据集、基准与任务，需由组织成员在「成员管理」中邀请（详见 <a href="#account">07 账号与组织</a>）。
+        </p>
+
+        <h3>导航结构</h3>
+        <p>左侧边栏分三块，另在左下角常驻<span class="pill accent">使用指南</span>入口（即本手册）：</p>
+        <div class="tbl-wrap">
+          <table class="ref">
+            <thead><tr><th>入口</th><th>内容</th></tr></thead>
+            <tbody>
+              <tr><td>数据概览</td><td>全局监控视图，登录后的默认落地页</td></tr>
+              <tr><td>AI 评估中心</td><td>点标题进入<strong>评估任务列表</strong>；其下三个子项：数据集 · 评估基准 · 评估报告模板</td></tr>
+              <tr><td>人工评估中心</td><td>纯人工标注工作台，与「AI 评估中心」平级</td></tr>
+            </tbody>
+          </table>
         </div>
+        <p>顶栏右侧显示<strong>今日模型调用额度</strong>（如「4 / 1000 次」，约每 30 秒刷新）。额度用尽后，需要调用模型的操作（执行评测、生成报告）会被拦截，次日恢复。</p>
 
         <h3>两种评估机制（贯穿全系统）</h3>
         <p>
@@ -468,6 +467,7 @@
             <ul>
               <li>必需列：<code>query</code>、<code>content</code></li>
               <li>基准里配「维度 + 权重」，权重合计需 = 100%</li>
+              <li>默认维度：相关性 / 全面性 / 准确性 / 可读性 / 时效性，各 20%</li>
               <li>报告给出各维度均值、低分占比、总分分布</li>
             </ul>
           </div>
@@ -482,35 +482,53 @@
           </div>
         </div>
 
-        <h3>导航与角色</h3>
-        <p>
-          左侧边栏进入四大工作台：<span class="pill">数据概览</span>
-          <span class="pill">评估中心</span>（即评估任务管理）
-          <span class="pill">数据集</span>
-          <span class="pill">评估基准</span>。
-          「数据源连接」标注 <span class="pill">待开发</span>，暂不可用。
-        </p>
+        <h3>AI 评估任务：四步闭环</h3>
+        <div class="flow">
+          <div class="node">
+            <div class="step-n">01</div>
+            <div class="step-title">数据准备</div>
+            <div class="step-d">数据集 + 评估基准（+ 可选报告模板）</div>
+          </div>
+          <div class="arrow">→</div>
+          <div class="node">
+            <div class="step-n">02</div>
+            <div class="step-title">AI 评测</div>
+            <div class="step-d">裁判员模型逐条打分</div>
+          </div>
+          <div class="arrow">→</div>
+          <div class="node">
+            <div class="step-n">03</div>
+            <div class="step-title">人工复核</div>
+            <div class="step-d">逐条通过 / 调整，兜置信</div>
+          </div>
+          <div class="arrow">→</div>
+          <div class="node">
+            <div class="step-n">04</div>
+            <div class="step-title">评估报告</div>
+            <div class="step-d">按报告模板自动生成 Markdown</div>
+          </div>
+        </div>
         <div class="note">
           <span class="note-t">协同分工</span>
-          <p><strong>人工定标准</strong>——由你设计数据集与评估基准；<strong>AI 做执行</strong>——裁判员模型逐条打分；<strong>人工兜置信</strong>——你在任务详情里逐条复核，通过或调整后报告才最终定稿。</p>
+          <p><strong>人工定标准</strong>——由你设计数据集、评估基准与报告模板；<strong>AI 做执行</strong>——裁判员模型逐条打分、依模板撰写报告；<strong>人工兜置信</strong>——你在任务详情里逐条复核，通过或调整后报告才最终定稿。人工评估中心则是把「打分」这一步也交回人工。</p>
         </div>
       </section>
 
       <hr class="rule" />
 
       <!-- ============ 01 数据集 ============ -->
-      <section id="datasets" class="reveal">
+      <section id="datasets">
         <span class="sec-eyebrow">01 — Datasets</span>
         <h2>数据集管理</h2>
         <p>
-          数据集是一批待评样本的集合。进入侧边栏<strong>「数据集」</strong>查看全部数据集，
-          支持按名称 / ID 搜索，按<strong>来源</strong>（文件上传 / 示例生成 / 数据库直连）、
-          <strong>创建人</strong>、<strong>创建时间</strong>筛选。
+          数据集是一批待评样本的集合。进入 <strong>AI 评估中心 › 数据集</strong> 查看全部数据集，
+          支持按名称 / ID 搜索，按<strong>来源</strong>、<strong>创建人</strong>、<strong>创建时间</strong>筛选。
+          「数据源连接」标注 <span class="pill">待开发</span>，暂不可用。
         </p>
 
         <figure>
           <img src="assets/10-datasets-list.jpg" alt="数据集列表页" />
-          <figcaption><b>图 1.1</b><span>数据集列表——每行展示评估方式、来源、字数、条数与引用情况；右上角「创建数据集」。</span></figcaption>
+          <figcaption><b>图 1.1</b><span>数据集列表——每行展示评估方式、来源、字数、条数；右上角「创建数据集」。</span></figcaption>
         </figure>
 
         <h3>创建数据集</h3>
@@ -575,11 +593,11 @@
       <hr class="rule" />
 
       <!-- ============ 02 评估基准 ============ -->
-      <section id="benchmarks" class="reveal">
+      <section id="benchmarks">
         <span class="sec-eyebrow">02 — Benchmarks</span>
         <h2>评估基准管理</h2>
         <p>
-          评估基准 = 一套<strong>可复用的打分标准</strong>。进入侧边栏<strong>「评估基准」</strong>，
+          评估基准 = 一套<strong>可复用的打分标准</strong>。进入 <strong>AI 评估中心 › 评估基准</strong>，
           可按<strong>评估类型</strong>（提示词类型 / 技能 Skill）、<strong>评估方式</strong>（多维度 / GSB）、创建人筛选。
           每个基准带<strong>版本号</strong>与<strong>状态</strong>（已验证 / 未验证），以及被任务引用的<strong>使用次数</strong>。
         </p>
@@ -661,14 +679,77 @@
 
       <hr class="rule" />
 
-      <!-- ============ 03 评估任务 ============ -->
-      <section id="tasks" class="reveal">
-        <span class="sec-eyebrow">03 — Evaluation tasks</span>
-        <h2>评估任务管理</h2>
+      <!-- ============ 03 评估报告模板 ============ -->
+      <section id="report-templates">
+        <span class="sec-eyebrow">03 — Report templates</span>
+        <h2>评估报告模板</h2>
         <p>
-          侧边栏<strong>「评估中心」</strong>即评估任务管理。列表展示每个任务的
-          <strong>状态</strong>、评估方式、所用基准、样本量与进度，可按任务名 / ID 搜索，
-          按状态、评估方式、任务类型、裁判员模型筛选。
+          评估报告模板决定<strong>任务完成时那份 Markdown 报告怎么写</strong>——由 AI 依据模板对评测/标注结果做汇总撰写。
+          进入 <strong>AI 评估中心 › 评估报告模板</strong>，可按名称 / ID 搜索，按类型筛选。
+          首次使用系统会内置一份 <span class="pill">技能 Skill</span> 型「默认评估报告」（<code>evaluation-report</code>），可直接用、可复制改、也可删除。
+        </p>
+
+        <figure>
+          <img src="assets/40-report-templates-list.jpg" alt="评估报告模板列表" />
+          <figcaption><b>图 3.1</b><span>评估报告模板列表——类型、内容摘要、版本、使用次数；行内可查看 / 编辑 / 复制 / 删除。</span></figcaption>
+        </figure>
+
+        <h3>两种模板类型</h3>
+        <div class="mech-grid">
+          <div class="mech">
+            <h4>技能 Skill　<span class="tag">SKILL</span></h4>
+            <ul>
+              <li>用内置 <code>evaluation-report</code>，或上传自定义技能包</li>
+              <li>技能的 instructions 就是报告写作规范</li>
+              <li>适合有成套报告规范、要跨任务统一风格的场景</li>
+            </ul>
+          </div>
+          <div class="mech">
+            <h4>提示词类型　<span class="tag">PROMPT</span></h4>
+            <ul>
+              <li>一段报告提示词 + 一份<strong>章节清单</strong></li>
+              <li>提示词里的 <code>{章节}</code> 会被替换为勾选的章节</li>
+              <li>默认章节：整体结论 / GSB 专项评估 / 分维度问题分析 / 典型错误 case 分析 / 改进建议</li>
+            </ul>
+          </div>
+        </div>
+
+        <h3>创建报告模板（两步向导）</h3>
+        <ol class="steps">
+          <li><p><strong>基础信息：</strong>填写<strong>模板名称</strong>（必填，≤ 50 字）、<strong>模板描述</strong>（选填，≤ 200 字），选择<strong>模板类型</strong>（技能 Skill / 提示词类型）。点<strong>「下一步」</strong>。</p></li>
+          <li>
+            <p><strong>报告配置：</strong></p>
+            <p><strong>技能 Skill —</strong> 选技能来源：内置技能下拉，或上传 <code>.zip</code>（根目录含 <code>SKILL.md</code>）/ <code>SKILL.md</code>（≤ 10 MB）；解析后展示技能名称、版本与指令全文。</p>
+            <p><strong>提示词类型 —</strong> 在提示词编辑框写作规范（可插入 <code>{章节}</code> 变量），并在下方勾选 / 增删<strong>报告章节</strong>。「GSB 专项评估」这一章仅当任务为 GSB 对比时才会写入报告。</p>
+          </li>
+          <li><p>点<strong>「保存」</strong>。</p></li>
+        </ol>
+
+        <figure>
+          <img src="assets/41-report-template-create.jpg" alt="创建评估报告模板 步骤一" />
+          <figcaption><b>图 3.2</b><span>步骤一「基础信息」——名称、描述，以及技能 Skill / 提示词类型二选一。</span></figcaption>
+        </figure>
+        <figure>
+          <img src="assets/42-report-template-detail.jpg" alt="评估报告模板详情" />
+          <figcaption><b>图 3.3</b><span>模板详情（技能 Skill）——技能名称 / 版本 / 来源文件 + 指令全文 + 被引用任务。</span></figcaption>
+        </figure>
+
+        <div class="note">
+          <span class="note-t">与任务的关系</span>
+          <p>创建 AI 评估任务或人工标注任务时都会选一个报告模板。任务完成后按该模板生成报告。<strong>不选模板</strong>（AI 任务里选「不生成智能报告」）则回退到系统内置的确定性五段式报告。使用次数 &gt; 0 的模板不可删除。</p>
+        </div>
+      </section>
+
+      <hr class="rule" />
+
+      <!-- ============ 04 AI 评估任务 ============ -->
+      <section id="tasks">
+        <span class="sec-eyebrow">04 — Evaluation tasks</span>
+        <h2>AI 评估任务</h2>
+        <p>
+          点侧边栏<strong>「AI 评估中心」</strong>标题即进入评估任务列表。列表展示每个任务的
+          <strong>状态</strong>、任务类型、评估方式、所用基准、样本量与进度，可按任务名 / ID / 创建人搜索，
+          按状态、评估方式、任务类型、裁判员模型、创建人筛选。
         </p>
         <div class="tbl-wrap">
           <table class="ref">
@@ -676,7 +757,7 @@
             <tbody>
               <tr><td><span class="pill">未开始</span></td><td>已创建、尚未执行</td><td>执行评测 · 编辑 · 复制 · 删除</td></tr>
               <tr><td><span class="pill accent">执行中</span></td><td>裁判员模型正在逐条打分</td><td>停止</td></tr>
-              <tr><td><span class="pill good">已完成</span></td><td>打分完成，待 / 已复核</td><td>查看报告 · 复制任务 · 下载测试集 · 删除</td></tr>
+              <tr><td><span class="pill good">已完成</span></td><td>打分完成，待 / 已复核</td><td>人工审核（未复核完）/ 查看报告（已复核）· 复制 · 下载测试集 · 删除</td></tr>
               <tr><td><span class="pill">已停止</span></td><td>执行中被手动停止</td><td>执行评测（继续）· 编辑 · 复制 · 删除</td></tr>
               <tr><td><span class="pill warn">执行失败</span></td><td>执行异常终止</td><td>重试 · 编辑 · 查看失败原因</td></tr>
             </tbody>
@@ -684,8 +765,8 @@
         </div>
 
         <figure>
-          <img src="assets/30-tasks-list.jpg" alt="评估中心任务列表" />
-          <figcaption><b>图 3.1</b><span>评估中心——顶部「三步引导」条：数据准备 → AI评测 → 人工复核 → 报告。</span></figcaption>
+          <img src="assets/30-tasks-list.jpg" alt="AI 评估中心任务列表" />
+          <figcaption><b>图 4.1</b><span>AI 评估中心任务列表——顶部「三步引导」条：数据准备 → AI评测 → 人工复核 → 报告。</span></figcaption>
         </figure>
 
         <h3>第 1 步 · 创建任务</h3>
@@ -699,31 +780,34 @@
             <p>选<strong>评测数据</strong>（必填，只列出与基准同机制的数据集）。也可点<strong>「创建新数据集」</strong>就地新建。</p>
           </li>
           <li>
-            <p>选<strong>AI 裁判员模型</strong>（必填）。默认 <code>deepseek-v4-flash</code>（DeepSeek Flash，真实调用）。</p>
+            <p>选<strong>AI 裁判员模型</strong>（必填）。默认 <code>deepseek-v4-flash</code>（DeepSeek V4 Flash · 推荐）；下拉里标「走模拟引擎」的模型不会真实调用。</p>
           </li>
           <li>
-            <p>弹窗底部给出<strong>预估</strong>：字数、token、耗时、成本。确认后点<strong>「创建任务」</strong>。</p>
+            <p>选<strong>评估报告模板</strong>（可选）。不选则任务完成时用内置固定模板出报告；也可点<strong>「新建报告模板」</strong>就地新建。</p>
+          </li>
+          <li>
+            <p>弹窗底部给出<strong>预估</strong>：字数、token、耗时、成本。确认后点<strong>「创建任务」</strong>——创建后<strong>自动开始执行</strong>。</p>
           </li>
         </ol>
         <figure>
           <img src="assets/31-task-create.jpg" alt="创建评测任务弹窗" />
-          <figcaption><b>图 3.2</b><span>创建评测任务——基准决定评估方式，数据集随之过滤；裁判员模型默认 DeepSeek Flash。</span></figcaption>
+          <figcaption><b>图 4.2</b><span>创建评测任务——基准决定评估方式、数据集随之过滤；裁判员模型与评估报告模板均可就地新建。</span></figcaption>
         </figure>
 
         <h3>第 2 步 · 执行评测</h3>
         <p>
-          在列表或任务详情点<strong>「执行评测」</strong>，任务转入<span class="pill accent">执行中</span>，
-          详情页显示实时进度条（已完成 / 总样本）。需要时可<strong>「停止」</strong>；执行失败时点<strong>「重试」</strong>，
+          未开始 / 已停止的任务可在列表或详情点<strong>「执行评测」</strong>，任务转入<span class="pill accent">执行中</span>，
+          详情页显示实时进度（已完成 / 总样本）。需要时可<strong>「停止」</strong>；执行失败时点<strong>「重试」</strong>，
           并在详情页顶部查看<strong>失败原因</strong>。
         </p>
         <div class="note">
           <span class="note-t">进度四段</span>
-          <p>任务详情顶部的步骤条对应：<strong>数据准备 → AI评测 → 人工复核 → 报告</strong>。统计行会显示样本量、预估字数、预估 / 实际成本、预估耗时、<strong>评测引擎</strong>（真实调用 / 模拟，或「部分降级」）与复核进度。</p>
+          <p>任务详情顶部的步骤条对应：<strong>数据准备 → AI评测 → 人工复核 → 报告</strong>。统计行显示样本量、预估字数、预估 / 实际成本、预估耗时、<strong>评测引擎</strong>（真实调用 / 模拟，或「部分降级」）与复核进度。</p>
         </div>
 
         <h3>第 3 步 · 人工复核</h3>
         <p>
-          打分完成后，在任务详情的<strong>「评测结果」</strong>表逐条复核。每行给出样本 Query、评分（多维度总分及各维分；GSB 为 Good/Same/Bad 及双方总分）与理由。
+          打分完成后，在任务详情的<strong>「评测结果」</strong>表逐条复核。每行给出样本 Query、评分（多维度为总分及各维分；GSB 为 Good/Same/Bad 及双方总分）与理由。
         </p>
         <ol class="steps">
           <li><p>认可 AI 判分——点该行<strong>「通过」</strong>。</p></li>
@@ -737,52 +821,150 @@
         </ol>
         <figure>
           <img src="assets/32-task-detail.jpg" alt="任务详情 待复核" />
-          <figcaption><b>图 3.3</b><span>任务详情（已完成 · 待复核）——每行「通过 / 调整」，表头「全部通过」，底部提示报告为初步统计。</span></figcaption>
+          <figcaption><b>图 4.3</b><span>任务详情（已完成 · 待复核）——每行「通过 / 调整」，表头「全部通过」，底部可直达完整报告。</span></figcaption>
         </figure>
 
         <h3>第 4 步 · 阅读评估报告</h3>
-        <p>报告页按固定五段式组织，与可导出的 Markdown 结构一一对应：</p>
+        <p>
+          报告正文由<strong>所选报告模板</strong>驱动（章节与措辞随模板变化），页面顶部先是指标卡与
+          GSB 占比条 / 多维度概览。若人工复核尚未完成，报告顶部会提示「初步统计，复核结果确认后同步更新」。
+        </p>
         <div class="tbl-wrap">
           <table class="ref">
-            <thead><tr><th>章节</th><th>多维度</th><th>GSB</th></tr></thead>
+            <thead><tr><th>默认章节</th><th>多维度</th><th>GSB</th></tr></thead>
             <tbody>
-              <tr><td>一　整体结论</td><td>最弱 / 最强维度、全链路判断</td><td>整体强弱于基线，G∶S∶B 速览</td></tr>
-              <tr><td>二 / 三　专项分析</td><td>三　分维度问题分析：各维均值、低分占比、总分分布</td><td>二　GSB 专项评估：Good/Same/Bad、胜率、净胜率</td></tr>
-              <tr><td>四　典型错误 case</td><td colspan="2">按错误类型聚合 + 2~3 个典型 case 详评（原始 Query、问题定位、原文问题片段）</td></tr>
-              <tr><td>五　改进建议</td><td colspan="2">对应共性短板的可落地建议</td></tr>
+              <tr><td>整体结论</td><td>最弱 / 最强维度、全链路判断</td><td>整体强弱于基线，G∶S∶B 速览</td></tr>
+              <tr><td>专项分析</td><td>分维度问题分析：各维均值、低分占比、总分分布</td><td>GSB 专项评估：Good/Same/Bad、胜率、净胜率</td></tr>
+              <tr><td>典型错误 case</td><td colspan="2">按错误类型聚合 + 2~3 个典型 case 详评（原始 Query、问题定位、原文问题片段）</td></tr>
+              <tr><td>改进建议</td><td colspan="2">对应共性短板的可落地建议</td></tr>
             </tbody>
           </table>
         </div>
         <p>
           页面右上角可<strong>复制 Markdown</strong>、<strong>下载 Markdown</strong>、<strong>下载 Excel</strong>（原始打分表）。
           报告下方还有<strong>逐样本明细</strong>表与可展开的 <strong>Markdown 源码</strong>。
-          若人工复核尚未完成，报告顶部会提示「初步统计，复核结果确认后同步更新」。
         </p>
         <figure>
           <img src="assets/33-task-report.jpg" alt="评估报告页" />
-          <figcaption><b>图 3.4</b><span>评估报告（GSB 示例）——整体结论 + GSB 专项评估 + 典型错误 case 分析。</span></figcaption>
+          <figcaption><b>图 4.4</b><span>评估报告（GSB 示例）——指标卡 + GSB 专项评估 + 典型错误 case 分析 + 逐样本明细。</span></figcaption>
         </figure>
         <div class="note good">
           <span class="note-t">复用与追溯</span>
-          <p>已完成任务可<strong>「复制任务」</strong>快速发起回归；<strong>「下载测试集 / 评估测试集」</strong>导出逐样本打分明细（CSV）。任务详情头部始终显示所用基准、数据集、裁判员模型与引擎，便于追溯。</p>
+          <p>已完成任务可<strong>「复制任务」</strong>快速发起回归；<strong>「下载测试集」</strong>导出逐样本打分明细（CSV）。报告页头部始终显示所用基准、数据集、裁判员模型与引擎，便于追溯。</p>
         </div>
       </section>
 
       <hr class="rule" />
 
-      <!-- ============ 04 概览 ============ -->
-      <section id="overview" class="reveal">
-        <span class="sec-eyebrow">04 — Overview</span>
-        <h2>评估数据概览</h2>
+      <!-- ============ 05 人工评估中心 ============ -->
+      <section id="manual">
+        <span class="sec-eyebrow">05 — Manual evaluation</span>
+        <h2>人工评估中心</h2>
         <p>
-          侧边栏<strong>「数据概览」</strong>是全局监控视图，进入系统的默认落地页。
+          人工评估中心是一个<strong>纯人工标注工作台</strong>：上传数据后由人逐条判读，标注满自动汇总，
+          再由你主动触发 AI 依据标注结果撰写报告。适合 AI 裁判员难以胜任、或需要人来定调的评测。
+        </p>
+        <div class="flow">
+          <div class="node"><div class="step-n">01</div><div class="step-title">上传数据</div><div class="step-d">选标注类型 + 传文件 + 定维度 + 选报告模板</div></div>
+          <div class="arrow">→</div>
+          <div class="node"><div class="step-n">02</div><div class="step-title">逐条标注</div><div class="step-d">在工作台里一条条判读 / 打分</div></div>
+          <div class="arrow">→</div>
+          <div class="node"><div class="step-n">03</div><div class="step-title">自动汇总</div><div class="step-d">标注满后即时汇总胜率 / 均值 / 低分</div></div>
+          <div class="arrow">→</div>
+          <div class="node"><div class="step-n">04</div><div class="step-title">AI 报告</div><div class="step-d">主动点「AI 生成评估报告」</div></div>
+        </div>
+
+        <figure>
+          <img src="assets/50-manual-list.jpg" alt="人工评估中心任务列表" />
+          <figcaption><b>图 5.1</b><span>人工评估中心——标注任务列表，展示标注类型、进度、状态；右上角「创建标注任务」。</span></figcaption>
+        </figure>
+
+        <h3>三种标注类型</h3>
+        <div class="tbl-wrap">
+          <table class="ref">
+            <thead><tr><th>类型</th><th>数据字段</th><th>标注方式</th></tr></thead>
+            <tbody>
+              <tr><td>GSB 标注</td><td><code>query</code> / <code>content</code> / <code>baseline</code></td><td>左右分栏对比，判 G（实验更好）/ S（持平）/ B（实验更差）</td></tr>
+              <tr><td>多维度评估标注</td><td><code>query</code> / <code>content</code></td><td>单栏内容，各维度 1–5 分，自动加权总分（可手动指定）</td></tr>
+              <tr><td>多轮对话标注</td><td><code>session_id</code> / <code>turn</code> / <code>role</code> / <code>content</code></td><td>按 session 聚合成对话，整段一个多维打分</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>创建标注任务</h3>
+        <ol class="steps">
+          <li><p>点<strong>「创建标注任务」</strong>，填<strong>任务名称</strong>（必填，≤ 50 字）与<strong>任务描述</strong>（选填，≤ 200 字）。</p></li>
+          <li><p>选<strong>标注类型</strong>（GSB / 多维度 / 多轮对话，<strong>创建后不可修改</strong>）。GSB 可另设<strong>左右布局</strong>（决定工作台里基线与实验哪边在左）。</p></li>
+          <li><p>点<strong>「下载 XX 模板」</strong>拿到对应字段的模板，整理数据后拖入上传区。GSB / 多维度支持 <code>CSV / XLSX</code>；多轮对话支持 <code>JSONL / JSON / CSV</code>（按 <code>session_id</code> 分组）。</p></li>
+          <li><p>多维度 / 多轮对话需配<strong>评分维度</strong>（默认五维各 20%，可增删改，权重合计需为 100%）。</p></li>
+          <li><p>选<strong>评估报告模板</strong>（必填，标注完成后由 AI 依据此模板撰写报告）与<strong>报告生成模型</strong>。</p></li>
+          <li><p>点<strong>「创建并开始标注」</strong>，直接进入标注工作台。</p></li>
+        </ol>
+        <figure>
+          <img src="assets/51-manual-create.jpg" alt="创建标注任务弹窗" />
+          <figcaption><b>图 5.2</b><span>创建标注任务——三种标注类型卡片、左右布局、模板下载与文件上传。</span></figcaption>
+        </figure>
+
+        <h3>标注工作台</h3>
+        <p>
+          左侧是<strong>单元列表</strong>（可按「全部 / 未标注 / 已标注 / 已跳过」过滤，圆点表示完成状态），
+          右侧是当前单元的判读区。下方每条都可填<strong>备注</strong>，或点<strong>「跳过 / 无法判断」</strong>。
+          GSB 类型判定后会自动跳到下一条未标注项。
+        </p>
+        <div class="tbl-wrap">
+          <table class="ref">
+            <thead><tr><th>类型</th><th>判读区</th></tr></thead>
+            <tbody>
+              <tr><td>GSB</td><td>顶部 query + 左右两栏（基线 / 实验）+ 「G·实验更好 / S·持平 / B·实验更差」三按钮</td></tr>
+              <tr><td>多维度</td><td>顶部 query + 单栏内容 + 各维度 1–5 分选择条 + 自动总分（可勾「手动指定总分」）</td></tr>
+              <tr><td>多轮对话</td><td>按 session 聚合的对话气泡（左＝用户、右＝模型）+ 整段一个多维打分</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <figure>
+          <img src="assets/52-manual-annotate-gsb.jpg" alt="GSB 标注工作台" />
+          <figcaption><b>图 5.3</b><span>GSB 标注工作台——单元列表 + 基线 / 实验双栏 + G/S/B 判定（正文为示意，已做模糊处理）。</span></figcaption>
+        </figure>
+        <figure>
+          <img src="assets/53-manual-annotate-multidim.jpg" alt="多维度标注工作台" />
+          <figcaption><b>图 5.4</b><span>多维度标注——单栏内容 + 各维度 1–5 分 + 自动加权总分（正文为示意，已做模糊处理）。</span></figcaption>
+        </figure>
+        <figure>
+          <img src="assets/54-manual-annotate-conversation.jpg" alt="多轮对话标注工作台" />
+          <figcaption><b>图 5.5</b><span>多轮对话标注——对话气泡（左用户 / 右模型）+ 整段一个多维打分。</span></figcaption>
+        </figure>
+
+        <h3>汇总与 AI 报告</h3>
+        <p>
+          点右上角<strong>「查看汇总」</strong>进入汇总页：指标卡（样本总量 / 已标注 / 已跳过 / 完成率）、
+          <strong>分数汇总</strong>（GSB 给 G∶S∶B 条与胜率 / 净胜率；多维度给平均总分、各维均值条与分布）、
+          以及<strong>被判 B / 低分样本</strong>清单。
+        </p>
+        <ol class="steps">
+          <li><p>标注<strong>全部完成</strong>后，点右上角<strong>「AI 生成评估报告」</strong>，由 AI 依据标注结果 + 所选报告模板撰写；生成中会自动轮询刷新。未完成时该按钮不可用，只能看初步汇总。</p></li>
+          <li><p>报告就绪后可<strong>「下载报告」</strong>（.md）。任意时刻可<strong>「导出明细」</strong>（逐条标注结果 CSV）。</p></li>
+        </ol>
+        <figure>
+          <img src="assets/55-manual-summary.jpg" alt="人工标注汇总与 AI 报告" />
+          <figcaption><b>图 5.6</b><span>汇总页——指标卡 + 分维度均值条 + AI 依据标注结果撰写的评估报告。</span></figcaption>
+        </figure>
+      </section>
+
+      <hr class="rule" />
+
+      <!-- ============ 06 概览 ============ -->
+      <section id="overview">
+        <span class="sec-eyebrow">06 — Overview</span>
+        <h2>数据概览</h2>
+        <p>
+          侧边栏<strong>「数据概览」</strong>是全局监控视图，也是登录后的默认落地页。
           右上角切换时间范围：<span class="pill">今日</span> <span class="pill">近7天</span>
           <span class="pill">近30天</span> <span class="pill">自定义</span>（选自定义后需指定起止日期，指标才会加载）。
         </p>
 
         <figure>
           <img src="assets/01-overview.jpg" alt="数据概览首页" />
-          <figcaption><b>图 4.1</b><span>数据概览——四张核心指标卡 + 评估量趋势柱状图 + 任务类型分布。</span></figcaption>
+          <figcaption><b>图 6.1</b><span>数据概览——四张核心指标卡 + 评估量趋势柱状图 + 任务类型分布。</span></figcaption>
         </figure>
 
         <div class="tbl-wrap">
@@ -801,8 +983,46 @@
         </div>
       </section>
 
+      <hr class="rule" />
+
+      <!-- ============ 07 账号与组织 ============ -->
+      <section id="account">
+        <span class="sec-eyebrow">07 — Account &amp; org</span>
+        <h2>账号与组织</h2>
+        <p>
+          系统只有一个组织<span class="pill">智搜产品</span>，所有数据集、基准、模板、任务都归它所有——
+          换句话说，<strong>在不在组织里</strong>决定你能不能看到这些数据。
+        </p>
+
+        <h3>顶栏账号菜单</h3>
+        <p>点顶栏右侧的姓名，展开菜单：</p>
+        <div class="tbl-wrap">
+          <table class="ref">
+            <thead><tr><th>菜单项</th><th>作用</th></tr></thead>
+            <tbody>
+              <tr><td>修改密码</td><td>原密码 + 新密码（8–64 位）。改后其它设备需重新登录</td></tr>
+              <tr><td>成员管理</td><td>进入成员列表（仅组织内成员可见）</td></tr>
+              <tr><td>退出组织</td><td>退出后成为孤立账号，看不到任何数据，需被重新邀请</td></tr>
+              <tr><td>退出登录</td><td>结束当前会话</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>成员管理</h3>
+        <p>组织内<strong>任意成员</strong>都可以管理成员：</p>
+        <ol class="steps">
+          <li><p><strong>添加成员</strong>——填姓名 + 账号（2–32 位小写字母 / 数字 / 下划线，建议用姓名拼音），初始密码 <code>12345678</code>。若该账号已存在且为孤立账号，则直接邀请其加入（可不填姓名）。</p></li>
+          <li><p><strong>重置密码</strong>——把某成员的密码重置回 <code>12345678</code>。</p></li>
+          <li><p><strong>移出组织</strong>——把他人移出（不能移自己）；被移出者变为孤立账号。</p></li>
+        </ol>
+        <div class="note warn">
+          <span class="note-t">孤立账号</span>
+          <p>没有组织的账号登录后，侧边栏各功能禁用，页面提示联系组织成员邀请。把账号加回组织后即恢复。</p>
+        </div>
+      </section>
+
       <footer class="foot">
-        <p>本指南依据当前线上界面整理，涉及页面：数据概览、评估中心（任务）、数据集、评估基准。界面文案与按钮以系统实际显示为准。</p>
+        <p>本指南依据当前线上界面整理，涉及模块：数据概览、AI 评估中心（数据集 / 评估基准 / 评估报告模板 / 评估任务）、人工评估中心、账号与组织。部分截图正文为内部测试语料，已做模糊处理。界面文案与按钮以系统实际显示为准。</p>
       </footer>
     </main>
   </div>
