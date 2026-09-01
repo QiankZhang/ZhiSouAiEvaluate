@@ -91,6 +91,38 @@ def test_build_report_gsb_net_win_rate():
     assert s["net_win_rate"] == 25.0  # (2-1)/4 * 100
 
 
+def test_template_sections_drops_gsb_section_on_multi_dim():
+    cfg = {"sections": ["整体结论", "GSB 专项评估", "改进建议"]}
+    assert report._template_sections(cfg, is_gsb=False) == ["整体结论", "改进建议"]
+    assert report._template_sections(cfg, is_gsb=True) == ["整体结论", "GSB 专项评估", "改进建议"]
+
+
+def test_template_sections_falls_back_to_defaults_when_empty():
+    assert report._template_sections({"sections": []}, is_gsb=False) == [
+        s for s in report.DEFAULT_REPORT_SECTIONS if s != report.GSB_SECTION
+    ]
+
+
+def test_generate_report_markdown_falls_back_to_template_without_report_template():
+    results = [_multi_result(1, 5, 5, "好"), _multi_result(2, 2, 2, "差")]
+    rep = report.build_report(TASK, results, MULTI_BM)  # judge_model=gpt-4.1 → 非 live
+    md = report.generate_report_markdown(TASK, rep, results, template=None)
+    assert "## 一、整体结论" in md  # 命中确定性模板
+
+
+def test_template_system_prompt_uses_skill_instructions():
+    tpl = {"type": "SKILL", "config": {"skill": {"instructions": "按五段式撰写报告"}}}
+    prompt = report._template_system_prompt(tpl, is_gsb=True)
+    assert "按五段式撰写报告" in prompt
+    assert "只输出 Markdown" in prompt
+
+
+def test_template_system_prompt_substitutes_sections_for_prompt_type():
+    tpl = {"type": "PROMPT", "config": {"prompt_template": "写报告，章节：\n{章节}", "sections": ["整体结论", "改进建议"]}}
+    prompt = report._template_system_prompt(tpl, is_gsb=False)
+    assert "1. 整体结论" in prompt and "2. 改进建议" in prompt
+
+
 def test_report_xlsx_sheets():
     results = [_multi_result(1, 5, 5, "好"), _multi_result(2, 2, 2, "差")]
     data = report.report_to_xlsx(TASK, results, MULTI_BM)

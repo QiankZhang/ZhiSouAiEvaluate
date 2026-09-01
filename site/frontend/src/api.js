@@ -4,6 +4,8 @@ async function request(path, options = {}) {
     ...options,
   });
   if (!response.ok) {
+    // 会话失效 / 未登录：广播给 App 切回登录页，各调用处无需单独处理
+    if (response.status === 401) window.dispatchEvent(new Event("auth:required"));
     let message = `请求失败（HTTP ${response.status}）`;
     let detail = null;
     try {
@@ -71,8 +73,35 @@ export const METHOD_LABELS = {
   GSB: "GSB",
 };
 
+// 人工评估中心：标注类型与任务状态的中文标签（与后端 manual.py 一致）
+export const ANNOTATE_TYPE_LABELS = {
+  GSB: "GSB 标注",
+  MULTI_DIM: "多维度评估标注",
+  CONVERSATION: "多轮对话标注",
+};
+
+export const MANUAL_STATUS_LABELS = {
+  ANNOTATING: "标注中",
+  COMPLETED: "已完成",
+};
+
 // 任务类型现在是自由文本（带历史记录联想），这里只保留初始建议值，不再是固定枚举。
 export const DEFAULT_TASK_TYPES = ["通用评估", "博文分析"];
+
+// 评估报告模板：「提示词」类型模板的默认章节与默认提示词，与后端 report.py 保持一致。
+// GSB_REPORT_SECTION 仅在任务为 GSB 时由后端纳入。
+export const GSB_REPORT_SECTION = "GSB 专项评估";
+export const DEFAULT_REPORT_SECTIONS = [
+  "整体结论",
+  GSB_REPORT_SECTION,
+  "分维度问题分析",
+  "典型错误 case 分析",
+  "改进建议",
+];
+export const DEFAULT_REPORT_PROMPT =
+  "你是「智搜策略效果评估」平台的评估报告撰写助手。基于用户提供的评测统计与样本数据，撰写一份 Markdown 格式的评估总报告。\n\n" +
+  "报告需覆盖以下章节（先后顺序、标题措辞可自行安排，但每一项内容都要覆盖到）：\n{章节}\n\n" +
+  "要求：结论先行；每个论断都用具体数字或样本 query 佐证，不写空泛套话；层次清晰；开头用一级标题「# <任务名> · 评估报告」并列出关键元信息。";
 
 export const REVIEW_LABELS = {
   NOT_STARTED: "未开始",

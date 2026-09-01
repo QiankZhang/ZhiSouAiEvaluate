@@ -1,0 +1,21 @@
+[Unit]
+Description=ZhiSou AI evaluation backend (FastAPI/uvicorn)
+After=network.target
+
+[Service]
+Type=simple
+User=zhisou
+Group=zhisou
+WorkingDirectory=/opt/zhisou/app/site
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/zhisou/venv/bin/uvicorn backend.main:app --host 127.0.0.1 --port 8000
+Restart=on-failure
+RestartSec=3
+# 数据与报告目录需可写；其余文件系统只读
+ReadWritePaths=/opt/zhisou/app/site/backend/data /opt/zhisou/app/site/backend/reports
+NoNewPrivileges=true
+ProtectSystem=full
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

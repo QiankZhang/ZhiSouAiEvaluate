@@ -22,7 +22,11 @@ def test_load_state_empty_returns_defaults(fresh_db):
         "tasks": [],
         "benchmarks": [],
         "datasets": [],
-        "id_seq": {"DS": 1000, "BM": 1000, "TK": 1000},
+        "report_templates": [],
+        "id_seq": {"DS": 1000, "BM": 1000, "TK": 1000, "RT": 1000, "MT": 1000},
+        "accounts": [],
+        "sessions": {},
+        "manual_tasks": [],
     }
 
 

@@ -42,6 +42,7 @@ const ICON_PATHS = {
     </>
   ),
   back: <path d="M19 12H5M12 19l-7-7 7-7" />,
+  chevron: <path d="M9 6l6 6-6 6" />,
   download: <path d="M12 3v12M7 10l5 5 5-5M5 21h14" />,
   more: (
     <>
@@ -88,6 +89,19 @@ const ICON_PATHS = {
     <>
       <path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7Z" />
       <circle cx="12" cy="12" r="3" />
+    </>
+  ),
+  book: (
+    <>
+      <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
+      <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2Z" />
+    </>
+  ),
+  external: (
+    <>
+      <path d="M15 3h6v6" />
+      <path d="M10 14 21 3" />
+      <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
     </>
   ),
 };

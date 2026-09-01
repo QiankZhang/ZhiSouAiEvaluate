@@ -1,8 +1,9 @@
-"""真实评测引擎（Judge Agent）：把「数据集样本 + 评估基准」交给 DeepSeek，产出与模拟
+"""真实评测引擎（Judge Agent）：把「数据集样本 + 评估基准」交给大模型网关，产出与模拟
 引擎 _evaluate_item 完全一致结构的评分结果（技术方案 §6.4 / §8.5）。
 
-两条路径（提示词类型 / 技能 Skill 类型）在这里汇合：都组装 system prompt + 强制
-submit_evaluation 工具调用 + 后端重算加权总分/GSB 裁决，保证可复现。
+两条路径（提示词类型 / 技能 Skill 类型）在这里汇合：都组装 system prompt +
+response_format=json_object 结构化输出 + 后端重算加权总分/GSB 裁决，保证可复现。
+（网关不支持 OpenAI function calling，故用 JSON 输出而非工具调用。）
 """
 
 import json
@@ -13,11 +14,11 @@ from . import config, llm
 GSB_GOOD_THRESHOLD = 0.18  # 与模拟引擎 _evaluate_item 保持一致
 
 _SYSTEM_SHELL = """你是"智搜策略效果评估"平台的评测裁判员（Judge Agent）。你正在执行一个自动化评测任务，
-唯一职责是依据下面加载的说明，对被评估内容打分，并通过 submit_evaluation 工具提交结果。
+唯一职责是依据下面加载的说明，对被评估内容打分，并以 JSON 形式输出结果。
 
 硬性规则：
 1. 你不与用户对话，也不会收到进一步澄清；下面提供的信息就是全部上下文。
-2. 你必须调用 submit_evaluation 工具提交最终结果；工具调用之外不要输出任何文字。
+2. 你必须且只能输出一个 JSON 对象作为最终结果，不要输出任何解释、前言、结束语或 Markdown 代码块。
 3. 维度评分为 1~5 的整数，禁止小数、禁止越界。
 4. 本次任务会连续调用你很多次（每次一条样本）；本段与下面的说明、维度配置在任务全程不变。
 
@@ -25,7 +26,9 @@ _SYSTEM_SHELL = """你是"智搜策略效果评估"平台的评测裁判员（Ju
 
 本次任务的维度定义（来自评估基准配置，以此为准，覆盖说明中的示例维度）：
 {dimensions_block}
-{gsb_block}"""
+{gsb_block}
+
+{output_spec_block}"""
 
 
 def _dimensions_block(dims: list[dict[str, Any]]) -> str:
@@ -36,9 +39,47 @@ def _dimensions_block(dims: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
+def _output_spec_block(dims: list[dict[str, Any]], is_gsb: bool) -> str:
+    """把期望的 JSON 输出结构写进 system prompt。网关不支持 function calling，
+    改用 response_format=json_object + 明确的结构说明来拿结构化结果。"""
+    keys = "、".join(d["key"] for d in dims)
+    if is_gsb:
+        rows = ",\n".join(
+            f'    {{"key": "{d["key"]}", "exp_score": <1-5 整数>, "base_score": <1-5 整数>, "reason": "<该维度点评，≤120字>"}}'
+            for d in dims
+        )
+        return (
+            "最终只输出如下 JSON 对象（不要包裹代码块）。dimensions 必须且只能包含这些 key："
+            f"{keys}；exp_score 为实验对象得分，base_score 为基线对象得分：\n"
+            "{\n"
+            '  "dimensions": [\n'
+            f"{rows}\n"
+            "  ],\n"
+            '  "reason": "<一句话整体对比结论，≤120字>",\n'
+            '  "confidence": <0~1 之间的小数>\n'
+            "}"
+        )
+    rows = ",\n".join(
+        f'    {{"key": "{d["key"]}", "score": <1-5 整数>, "reason": "<该维度点评，≤120字>"}}'
+        for d in dims
+    )
+    return (
+        "最终只输出如下 JSON 对象（不要包裹代码块）。dimensions 必须且只能包含这些 key："
+        f"{keys}：\n"
+        "{\n"
+        '  "dimensions": [\n'
+        f"{rows}\n"
+        "  ],\n"
+        '  "reason": "<一句话整体点评，≤120字>",\n'
+        '  "confidence": <0~1 之间的小数>\n'
+        "}"
+    )
+
+
 def build_system_prompt(benchmark: dict[str, Any], skill: Optional[dict[str, Any]]) -> str:
     cfg = benchmark["config"]
     dims = cfg["dimensions"]
+    is_gsb = benchmark["eval_method"] == "GSB"
     if skill:
         block = f"已加载技能：{skill['name']}（v{skill.get('version') or '—'}）\n\n{skill['instructions']}"
     else:
@@ -46,7 +87,7 @@ def build_system_prompt(benchmark: dict[str, Any], skill: Optional[dict[str, Any
         block = f"评测说明（提示词基准）：\n\n{template}"
 
     gsb_block = ""
-    if benchmark["eval_method"] == "GSB":
+    if is_gsb:
         gsb = cfg.get("gsb") or {}
         gsb_block = (
             "\nGSB 判定规则（实验=待评内容，基线=基线内容）：\n"
@@ -59,77 +100,15 @@ def build_system_prompt(benchmark: dict[str, Any], skill: Optional[dict[str, Any
         skill_or_prompt_block=block,
         dimensions_block=_dimensions_block(dims),
         gsb_block=gsb_block,
+        output_spec_block=_output_spec_block(dims, is_gsb),
     )
-
-
-def _submit_tool_multi(dims: list[dict[str, Any]]) -> dict:
-    keys = [d["key"] for d in dims]
-    return {
-        "type": "function",
-        "function": {
-            "name": "submit_evaluation",
-            "description": "提交本条样本的多维度评分结果",
-            "parameters": {
-                "type": "object",
-                "required": ["dimensions", "confidence"],
-                "properties": {
-                    "dimensions": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "required": ["key", "score", "reason"],
-                            "properties": {
-                                "key": {"type": "string", "enum": keys},
-                                "score": {"type": "integer", "minimum": 1, "maximum": 5},
-                                "reason": {"type": "string", "maxLength": 120},
-                            },
-                        },
-                    },
-                    "reason": {"type": "string", "maxLength": 120, "description": "一句话整体点评"},
-                    "confidence": {"type": "number", "minimum": 0, "maximum": 1},
-                },
-            },
-        },
-    }
-
-
-def _submit_tool_gsb(dims: list[dict[str, Any]]) -> dict:
-    keys = [d["key"] for d in dims]
-    return {
-        "type": "function",
-        "function": {
-            "name": "submit_evaluation",
-            "description": "提交本条样本的 GSB 对比评估结果：对每个维度分别给实验对象和基线对象打分",
-            "parameters": {
-                "type": "object",
-                "required": ["dimensions", "reason", "confidence"],
-                "properties": {
-                    "dimensions": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "required": ["key", "exp_score", "base_score"],
-                            "properties": {
-                                "key": {"type": "string", "enum": keys},
-                                "exp_score": {"type": "integer", "minimum": 1, "maximum": 5},
-                                "base_score": {"type": "integer", "minimum": 1, "maximum": 5},
-                                "reason": {"type": "string", "maxLength": 120},
-                            },
-                        },
-                    },
-                    "reason": {"type": "string", "maxLength": 120},
-                    "confidence": {"type": "number", "minimum": 0, "maximum": 1},
-                },
-            },
-        },
-    }
 
 
 def _user_message(item: dict[str, Any], is_gsb: bool) -> str:
     parts = [f"查询（query）：\n{item.get('query', '')}", f"\n待评内容（实验对象）：\n{item.get('content', '')}"]
     if is_gsb:
         parts.append(f"\n基线内容（基线对象）：\n{item.get('baseline', '')}")
-    parts.append("\n请依据已加载的说明完成本条评估，调用 submit_evaluation 提交结果。")
+    parts.append("\n请依据已加载的说明完成本条评估，只输出约定的 JSON 对象。")
     return "\n".join(parts)
 
 
@@ -164,10 +143,9 @@ def _evaluate_multi(item, benchmark, model, skill, system_prompt):
             {"role": "user", "content": _user_message(item, is_gsb=False)},
         ],
         model=model,
-        tools=[_submit_tool_multi(dims)],
-        tool_choice="auto",  # deepseek-v4-flash 思考模式不支持强制指定函数，用 auto + 强提示
+        response_format={"type": "json_object"},
     )
-    args = llm.extract_tool_arguments(resp, "submit_evaluation")
+    args = llm.parse_json_response(resp)
     raw_dims = args.get("dimensions") or []
     got = {d.get("key") for d in raw_dims}
     if got != expected:
@@ -213,10 +191,9 @@ def _evaluate_gsb(item, benchmark, model, skill, system_prompt):
             {"role": "user", "content": _user_message(item, is_gsb=True)},
         ],
         model=model,
-        tools=[_submit_tool_gsb(dims)],
-        tool_choice="auto",  # deepseek-v4-flash 思考模式不支持强制指定函数，用 auto + 强提示
+        response_format={"type": "json_object"},
     )
-    args = llm.extract_tool_arguments(resp, "submit_evaluation")
+    args = llm.parse_json_response(resp)
     raw_dims = args.get("dimensions") or []
     got = {d.get("key") for d in raw_dims}
     if got != expected:
@@ -283,7 +260,7 @@ def evaluate_item_llm(
     model: str,
     skill: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
-    """真实调用 DeepSeek 评一条样本。schema 校验失败轻量重试 ≤2；仍失败抛异常给调用方。"""
+    """真实调用大模型网关评一条样本。schema 校验失败轻量重试 ≤2；仍失败抛异常给调用方。"""
     system_prompt = build_system_prompt(benchmark, skill)
     is_gsb = benchmark["eval_method"] == "GSB"
     fn = _evaluate_gsb if is_gsb else _evaluate_multi

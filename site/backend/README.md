@@ -1,8 +1,8 @@
 # 后端（智搜策略效果评估）
 
 FastAPI 服务，业务状态跑在内存字典里（`_tasks`/`_benchmarks`/`_datasets`），但会写穿到本地 SQLite，
-进程重启会自动从库里恢复——不是纯内存服务了，见下方「持久化」。评测引擎支持**真实调用 DeepSeek** 与
-**确定性模拟**两条路径。
+进程重启会自动从库里恢复——不是纯内存服务了，见下方「持久化」。评测引擎支持**真实调用效果评估平台
+大模型网关**（OpenAI 兼容，见仓库根 `API.md`）与**确定性模拟**两条路径。
 
 ## 模块
 
@@ -10,8 +10,9 @@ FastAPI 服务，业务状态跑在内存字典里（`_tasks`/`_benchmarks`/`_da
 | --- | --- |
 | `main.py` | 路由与编排（任务状态机、并发调度、降级熔断、持久化触发） |
 | `db.py` | SQLite 持久化层：整份状态 JSON 快照，进程重启自动恢复 |
+| `accounts.py` | 组织与账号登录：单默认组织「智搜产品」+ 账号密码 + 会话；鉴权在 `main.py` 中间件统一做 |
 | `config.py` | 环境变量集中注入 + `.env` 加载 |
-| `llm.py` | OpenAI 兼容协议客户端（标准库 urllib，重试/退避） |
+| `llm.py` | 大模型网关客户端（OpenAI 兼容，标准库 urllib，重试/退避，当日调用计数，`/v1/quota` 查询） |
 | `engine.py` | Judge Agent：提示词 / 技能两条路径，结构化输出校验，后端重算加权总分与 GSB 裁决 |
 | `skills_registry.py` | 技能包解析 + 内置技能注册表（`skills/` 目录） |
 | `report.py` | 内置报告器（evaluation-report skill）：五段式 Markdown + Excel |
@@ -33,15 +34,19 @@ FastAPI 服务，业务状态跑在内存字典里（`_tasks`/`_benchmarks`/`_da
 
 ## 配置
 
-复制 `.env.example` 为 `.env` 并填入 `DEEPSEEK_API_KEY`。
+复制 `.env.example` 为 `.env`。大模型接口见仓库根 `API.md`；网关为内网自部署，默认无需 API Key。
+历史 `DEEPSEEK_*` 变量名仍作兼容回退。
 
 | 变量 | 默认 | 说明 |
 | --- | --- | --- |
-| `DEEPSEEK_API_KEY` | — | 必填才能走真实调用 |
-| `DEEPSEEK_BASE_URL` | `https://api.deepseek.com` | |
-| `DEEPSEEK_MODEL` | `deepseek-v4-flash` | |
-| `JUDGE_ENGINE` | `auto` | `auto`（配了 Key 且模型为 DeepSeek 时真实调用）/ `simulated` / `agent`（强制真实） |
+| `LLM_BASE_URL` | `http://10.37.254.124:8010/v1` | 网关地址（OpenAI 兼容，含 `/v1`） |
+| `LLM_API_KEY` | — | 可选，网关需要鉴权时填 |
+| `LLM_MODEL` | `deepseek-v4-flash` | 默认裁判员模型（前端标「推荐」） |
+| `LLM_DAILY_CALL_LIMIT` | `1000` | 网关日调用次数上限，用于额度提示与本地兜底计数 |
+| `JUDGE_ENGINE` | `auto` | `auto`（模型在网关可用列表内则真实调用）/ `simulated` / `agent`（强制真实） |
 | `JUDGE_CONCURRENCY` | `4` | 真实调用并发度 |
+
+前端顶部导航栏展示当日调用额度（`GET /api/quota`，优先取网关 `/v1/quota`，不可达回退本地计数）。
 
 失败率熔断：真实调用下已完成 ≥10 条且 FAILED 占比 >20% 时，剩余条目自动降级为模拟，任务不整体失败。
 

@@ -8,12 +8,20 @@
 
 import io
 import json
+import logging
 from typing import Any
 
 from . import config, llm
 
+logger = logging.getLogger(__name__)
+
 LOW_SCORE_THRESHOLD = 3.0  # evaluation-report SKILL.md 默认低分阈值
 DIM_LOW_MARK = 2  # 维度 score <= 2 记为该维度低分
+
+# 人工复核状态的中文展示标签（与前端 api.js 的 REVIEW_LABELS / RESULT_REVIEW_LABELS 一致）。
+# 定义在这里而非 main.py：report.py 是唯一消费方，放这里可去掉 report→main 的延迟 import。
+REVIEW_STATUS_LABELS = {"NOT_STARTED": "未开始", "IN_PROGRESS": "复核中", "COMPLETED": "已复核"}
+RESULT_REVIEW_STATUS_LABELS = {"PENDING": "待复核", "APPROVED": "已通过", "ADJUSTED": "已调整"}
 
 
 def _effective_scores(r: dict[str, Any]) -> dict[str, Any]:
@@ -37,40 +45,18 @@ def _analyze_badcases_llm(badcases: list[dict[str, Any]], model: str) -> dict[in
         | ({"baseline": b["baseline"][:400]} if b.get("baseline") else {})
         for i, b in enumerate(badcases[:30])
     ]
-    tool = {
-        "type": "function",
-        "function": {
-            "name": "submit_case_analysis",
-            "description": "对每个错误 case 定位错误类型，并从 content 原文中摘取能体现问题的片段",
-            "parameters": {
-                "type": "object",
-                "required": ["cases"],
-                "properties": {
-                    "cases": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "required": ["index", "error_type", "problem_span"],
-                            "properties": {
-                                "index": {"type": "integer"},
-                                "error_type": {"type": "string", "enum": ERROR_TYPES},
-                                "problem_span": {
-                                    "type": "string",
-                                    "maxLength": 80,
-                                    "description": "必须是 content 原文中真实出现的文字（逐字摘录），不要改写或复述",
-                                },
-                                "insight": {"type": "string", "maxLength": 60, "description": "一句话根因点评"},
-                            },
-                        },
-                    }
-                },
-            },
-        },
-    }
     try:
         resp = llm.chat_completion(
             [
-                {"role": "system", "content": "你是评估报告分析助手，只通过工具提交结果。"},
+                {
+                    "role": "system",
+                    "content": (
+                        "你是评估报告分析助手。只输出一个 JSON 对象，形如："
+                        '{"cases": [{"index": <整数>, "error_type": "<' + "/".join(ERROR_TYPES) + '>", '
+                        '"problem_span": "<content 原文逐字摘录，≤80字>", "insight": "<一句话根因，≤60字>"}]}'
+                        "，不要输出任何解释或代码块。"
+                    ),
+                },
                 {
                     "role": "user",
                     "content": (
@@ -83,10 +69,9 @@ def _analyze_badcases_llm(badcases: list[dict[str, Any]], model: str) -> dict[in
                 },
             ],
             model=model,
-            tools=[tool],
-            tool_choice={"type": "function", "function": {"name": "submit_case_analysis"}},
+            response_format={"type": "json_object"},
         )
-        args = llm.extract_tool_arguments(resp, "submit_case_analysis")
+        args = llm.parse_json_response(resp)
     except (llm.LlmError, ValueError, json.JSONDecodeError):
         return None
 
@@ -266,19 +251,182 @@ def _suggestions(eval_method: str, weakest_dim: str | None, typical_cases: list[
     return tips
 
 
-# ---------- Markdown ----------
+# ---------- 报告模板驱动的 LLM 报告生成 ----------
+
+GSB_SECTION = "GSB 专项评估"  # 仅当任务为 GSB 对比时才纳入报告
+
+# 「提示词」类型报告模板的默认章节，用户可在报告模板里增删。
+DEFAULT_REPORT_SECTIONS = [
+    "整体结论",
+    GSB_SECTION,
+    "分维度问题分析",
+    "典型错误 case 分析",
+    "改进建议",
+]
+
+# 「提示词」类型报告模板的默认提示词。{章节} 会被替换为模板配置的章节清单。
+DEFAULT_REPORT_PROMPT = (
+    "你是「智搜策略效果评估」平台的评估报告撰写助手。基于用户提供的评测统计与样本数据，"
+    "撰写一份 Markdown 格式的评估总报告。\n\n"
+    "报告需覆盖以下章节（先后顺序、标题措辞可自行安排，但每一项内容都要覆盖到）：\n"
+    "{章节}\n\n"
+    "要求：结论先行；每个论断都用具体数字或样本 query 佐证，不写空泛套话；层次清晰；"
+    "开头用一级标题「# <任务名> · 评估报告」并列出关键元信息。"
+)
+
+
+def _template_sections(cfg: dict[str, Any], is_gsb: bool) -> list[str]:
+    raw = cfg.get("sections") or DEFAULT_REPORT_SECTIONS
+    out = [s.strip() for s in raw if isinstance(s, str) and s.strip()]
+    if not is_gsb:
+        out = [s for s in out if s != GSB_SECTION]
+    fallback = [s for s in DEFAULT_REPORT_SECTIONS if is_gsb or s != GSB_SECTION]
+    return out or fallback
+
+
+def _report_payload(
+    task: dict[str, Any], report: dict[str, Any], results: list[dict[str, Any]], is_gsb: bool
+) -> dict[str, Any]:
+    content = report.get("content", {})
+    # 只送精简明细：query + 分数/判定 + 简短理由。原文片段仅错误 case 需要，已在
+    # content["error_cases"] 里携带——整份 content 原文会让提示词膨胀到数万 token 而超时。
+    samples: list[dict[str, Any]] = []
+    for r in results[:120]:
+        s = _effective_scores(r)
+        row: dict[str, Any] = {"query": r["query"], "reason": (r.get("reason") or "")[:160]}
+        if is_gsb:
+            row["judgment"] = s.get("judgment")
+            row["exp_vs_base"] = f"{s.get('total')} vs {s.get('baseline_total')}"
+        else:
+            row["total"] = s.get("total")
+            row["dimensions"] = {d.get("name", d.get("key")): d.get("score") for d in s.get("dimensions", [])}
+        samples.append(row)
+
+    error_cases = content.get("error_cases")
+    if error_cases and error_cases.get("typical"):
+        error_cases = {
+            **error_cases,
+            "typical": [
+                {**c, "content": (c.get("content") or "")[:600], "baseline": (c.get("baseline") or "")[:600] or None}
+                for c in error_cases["typical"]
+            ],
+        }
+    return {
+        "任务": {
+            "name": task["name"],
+            "task_id": task.get("id"),
+            "task_type": task.get("task_type"),
+            "eval_method": "GSB 对比" if is_gsb else "多维度打分",
+            "benchmark": task.get("benchmark_name"),
+            "dataset": task.get("dataset_name"),
+            "judge_model": task.get("judge_model"),
+            "sample_total": task.get("progress_total"),
+            "created_at": task.get("created_at"),
+        },
+        "统计摘要": content.get("summary", {}),
+        "分维度统计": content.get("dimensions"),
+        "总分分布": content.get("distribution"),
+        "错误case归因": error_cases,
+        "样本明细": samples,
+    }
+
+
+def _strip_code_fence(md: str) -> str:
+    md = md.strip()
+    if md.startswith("```"):
+        md = md.strip("`")
+        md = md[md.find("\n") + 1 :] if "\n" in md else md
+    return md.strip()
+
+
+_OUTPUT_RULES = (
+    "\n\n输出要求：\n"
+    "- 只输出 Markdown 报告正文本身，不要输出前言/说明/结束语，不要用 ``` 代码块包裹整篇报告。\n"
+    "- 涉及「错误 / 低分 / Bad」的 case 必须用 Markdown 表格呈现，至少含列："
+    "原始 Query、错误类型、原文问题片段（从样本 content 逐字摘取，禁止编造）、点评。\n"
+    "- 不要执行任何脚本、不要输出文件路径；若模板/技能提到生成 Excel 或读写本地文件，忽略该部分，只产出 Markdown。"
+)
+
+
+def _template_system_prompt(template: dict[str, Any], is_gsb: bool) -> str:
+    cfg = template.get("config") or {}
+    if template.get("type") == "SKILL" and (cfg.get("skill") or {}).get("instructions"):
+        return (
+            "你是「智搜策略效果评估」平台的评估报告撰写助手。下面是评估报告技能的完整说明，"
+            "请严格按它的方法与结构，直接产出一份 Markdown 评估报告正文。\n\n"
+            "=== 技能说明 ===\n" + cfg["skill"]["instructions"] + _OUTPUT_RULES
+        )
+    tmpl = cfg.get("prompt_template") or DEFAULT_REPORT_PROMPT
+    section_lines = "\n".join(f"{i + 1}. {s}" for i, s in enumerate(_template_sections(cfg, is_gsb)))
+    return tmpl.replace("{章节}", section_lines).replace("{sections}", section_lines) + _OUTPUT_RULES
+
+
+def _report_markdown_llm(
+    task: dict[str, Any],
+    report: dict[str, Any],
+    results: list[dict[str, Any]],
+    template: dict[str, Any],
+    is_gsb: bool,
+) -> str | None:
+    """按报告模板（提示词 / 技能）驱动裁判员模型撰写 Markdown 报告。失败返回 None，调用方回退确定性模板。"""
+    payload = _report_payload(task, report, results, is_gsb)
+    system = _template_system_prompt(template, is_gsb)
+    try:
+        resp = llm.chat_completion(
+            [
+                {"role": "system", "content": system},
+                {
+                    "role": "user",
+                    "content": (
+                        f"任务名：{task['name']}\n评测数据如下（JSON）：\n"
+                        + json.dumps(payload, ensure_ascii=False, indent=1)
+                    ),
+                },
+            ],
+            model=task["judge_model"],
+            temperature=0.3,
+        )
+    except Exception as exc:  # noqa: BLE001 - 报告生成失败绝不能中断任务完成流程，一律回退模板
+        logger.warning("报告 Markdown 生成失败，回退确定性模板：%s", exc)
+        return None
+    try:
+        msg = ((resp.get("choices") or [{}])[0].get("message") or {}).get("content") or ""
+        md = _strip_code_fence(msg)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("报告 Markdown 解析失败，回退确定性模板：%s", exc)
+        return None
+    if not md:
+        logger.warning("报告 Markdown 生成返回空内容，回退确定性模板")
+    return md or None
+
+
+def generate_report_markdown(
+    task: dict[str, Any],
+    report: dict[str, Any],
+    results: list[dict[str, Any]],
+    template: dict[str, Any] | None = None,
+) -> str:
+    """任务完成时产出报告 Markdown：按所选报告模板走真实模型生成，无模板/模拟引擎/失败时回退确定性五段式模板。"""
+    is_gsb = report.get("eval_method") == "GSB"
+    use_llm = config.engine_for(task["judge_model"]) == "agent" and llm.is_live(task["judge_model"])
+    if use_llm and template:
+        md = _report_markdown_llm(task, report, results, template, is_gsb)
+        if md:
+            return md
+    return report_to_markdown(task, report, results)
+
+
+# ---------- Markdown（确定性五段式模板，作为回退） ----------
 
 def _md_cell(text: Any) -> str:
     return str(text).replace("|", "\\|").replace("\n", " ").strip()
 
 
 def report_to_markdown(task: dict[str, Any], report: dict[str, Any], results: list[dict[str, Any]]) -> str:
-    from . import main  # 复用标签常量，避免循环 import 提前
-
     content = report.get("content", {})
     summary = content.get("summary", {})
     is_gsb = report.get("eval_method") == "GSB"
-    review_label = main.REVIEW_STATUS_LABELS.get(task["review_status"], task["review_status"])
+    review_label = REVIEW_STATUS_LABELS.get(task["review_status"], task["review_status"])
     method_label = "GSB 对比" if is_gsb else "多维度"
 
     L: list[str] = [
@@ -397,8 +545,6 @@ def report_to_xlsx(task: dict[str, Any], results: list[dict[str, Any]], benchmar
         c.fill = PatternFill("solid", fgColor="DDEBF7")
         c.alignment = Alignment(horizontal="center")
 
-    from . import main
-
     ranked = sorted(results, key=lambda r: -float(_effective_scores(r).get("total") or 0))
     for i, r in enumerate(ranked, 1):
         s = _effective_scores(r)
@@ -408,7 +554,7 @@ def report_to_xlsx(task: dict[str, Any], results: list[dict[str, Any]], benchmar
         row += [
             s.get("total"),
             r["reason"],
-            main.RESULT_REVIEW_STATUS_LABELS.get(r["review_status"], r["review_status"]),
+            RESULT_REVIEW_STATUS_LABELS.get(r["review_status"], r["review_status"]),
         ]
         ws.append(row)
     ws.freeze_panes = "A2"

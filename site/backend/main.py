@@ -2,6 +2,7 @@ import csv
 import hashlib
 import io
 import json
+import logging
 import math
 import re
 import threading
@@ -11,11 +12,19 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 from urllib.parse import quote
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import Response
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 
-from . import config, db as db_mod, engine as engine_mod, llm, report as report_mod, skills_registry
+from . import (
+    accounts,
+    config,
+    db as db_mod,
+    engine as engine_mod,
+    llm,
+    report as report_mod,
+    skills_registry,
+)
 
 # 技能包解析实现迁移到 skills_registry，这里保留别名兼容既有调用点
 _parse_skill_frontmatter = skills_registry.parse_skill_frontmatter
@@ -27,7 +36,7 @@ app = FastAPI(title="智搜策略效果评估", version="0.1.0")
 _lock = threading.Lock()
 
 # 自增序号而非 len(list)，避免删除后再新建/复制时 ID 复用冲突
-_id_seq = {"DS": 1000, "BM": 1000, "TK": 1000}
+_id_seq = {"DS": 1000, "BM": 1000, "TK": 1000, "RT": 1000, "MT": 1000}
 
 
 def _next_id(prefix: str) -> str:
@@ -123,16 +132,18 @@ _TEMPLATE_EXAMPLES = [
 
 # ---- 评测基准配置 ----
 
-_DIMENSIONS_MULTI = [
-    {"key": "relevance", "name": "相关性", "weight": 40, "criteria": "结果是否直接命中用户查询意图"},
-    {"key": "quality", "name": "内容质量", "weight": 30, "criteria": "信息是否准确、完整、可读"},
-    {"key": "format", "name": "呈现格式", "weight": 30, "criteria": "排版、结构与易读性"},
+# 全平台统一的默认评分维度：相关性 / 全面性 / 准确性 / 可读性 / 时效性，各 20%。
+# AI 评估（评估基准）与人工评估（人工评估中心）共用同一套默认，可在各自表单里改。
+DEFAULT_DIMENSIONS = [
+    {"key": "relevance", "name": "相关性", "weight": 20, "criteria": "结果是否直接命中用户查询意图"},
+    {"key": "comprehensiveness", "name": "全面性", "weight": 20, "criteria": "是否覆盖问题涉及的关键方面，信息是否完整"},
+    {"key": "accuracy", "name": "准确性", "weight": 20, "criteria": "事实、数据与结论是否准确无误"},
+    {"key": "readability", "name": "可读性", "weight": 20, "criteria": "排版、结构与表达是否清晰易读"},
+    {"key": "timeliness", "name": "时效性", "weight": 20, "criteria": "信息是否为最新，是否存在过时内容"},
 ]
 
-_DIMENSIONS_GENERAL = [
-    {"key": "relevance", "name": "相关性", "weight": 50, "criteria": "是否命中查询意图"},
-    {"key": "quality", "name": "内容质量", "weight": 50, "criteria": "准确性与完整度"},
-]
+_DIMENSIONS_MULTI = DEFAULT_DIMENSIONS
+_DIMENSIONS_GENERAL = DEFAULT_DIMENSIONS
 
 
 def _new_benchmark(
@@ -156,7 +167,7 @@ def _new_benchmark(
         "version": version,
         "status": status,
         "use_count": use_count,
-        "created_by": "孙颖",
+        "created_by": accounts.creator_name(),
         "created_at": "2026-08-10 10:00",
         "updated_at": "2026-08-18 15:00",
         "config": {
@@ -177,6 +188,10 @@ def _new_benchmark(
 
 # 平台不预置任何评估基准，全部由用户创建
 _benchmarks: list[dict[str, Any]] = []
+
+# 评估报告模板：驱动任务完成时的报告生成（提示词 / 技能两类，参考评估基准的设计）。
+# 首次启动播种一份内置模板（evaluation-report 技能），之后为普通数据，用户可增删改。
+_report_templates: list[dict[str, Any]] = []
 
 
 # ---- 数据集 ----
@@ -270,7 +285,12 @@ def _make_report(task: dict[str, Any], results: list[dict[str, Any]]) -> dict[st
     只统计 SUCCESS 条目，FAILED 条目不参与打分汇总（evaluation-report SKILL.md：跳过列表）。"""
     benchmark = next(b for b in _benchmarks if b["id"] == task["benchmark_id"])
     ok = [r for r in results if r.get("status") == "SUCCESS"]
-    return report_mod.build_report(task, ok, benchmark)
+    report = report_mod.build_report(task, ok, benchmark)
+    if report.get("status") == "READY":
+        # 报告 Markdown 在任务完成时一次性生成并缓存：按任务所选「评估报告模板」驱动，失败回退确定性模板
+        template = next((r for r in _report_templates if r["id"] == task.get("report_template_id")), None)
+        report["markdown"] = report_mod.generate_report_markdown(task, report, ok, template)
+    return report
 
 
 # ---- 任务 ----
@@ -278,23 +298,26 @@ def _make_report(task: dict[str, Any], results: list[dict[str, Any]]) -> dict[st
 # 任务类型是自由文本（前端带历史联想输入），这里只是新建任务时的默认建议值，不是枚举约束
 DEFAULT_TASK_TYPE = "通用评估"
 
-# 报告 Markdown 导出用的中文标签，与前端 api.js 里的 REVIEW_LABELS / RESULT_REVIEW_LABELS 保持一致
-REVIEW_STATUS_LABELS = {"NOT_STARTED": "未开始", "IN_PROGRESS": "复核中", "COMPLETED": "已复核"}
-RESULT_REVIEW_STATUS_LABELS = {"PENDING": "待复核", "APPROVED": "已通过", "ADJUSTED": "已调整"}
+# 报告 Markdown 导出用的中文标签（现定义在 report.py，这里保留别名兼容既有引用）
+REVIEW_STATUS_LABELS = report_mod.REVIEW_STATUS_LABELS
+RESULT_REVIEW_STATUS_LABELS = report_mod.RESULT_REVIEW_STATUS_LABELS
 
 # eval_method 是驱动打分引擎/必需列校验的底层机制代码，永远只有这两种，不可自定义扩展；
 # 数据集/基准可以在此基础上另起一个自定义显示名（eval_method_label），二者是分开的两个概念——
 # 自定义名称只影响展示，不改变底层打分规则与列校验。
 METHOD_LABELS = {"MULTI_DIM": "多维度", "GSB": "GSB 对比"}
 
-# 裁判员模型注册表。live=True 的模型在配置了 DEEPSEEK_API_KEY 时会真实调用（OpenAI 兼容协议）；
-# 其余为历史/占位标识，仅用于展示与老任务，评测时走确定性模拟引擎。单价为每 1k token（人民币元，估算）。
+# 裁判员模型注册表。live=True 的模型走效果评估平台大模型网关真实调用（OpenAI 兼容协议，见 API.md，
+# 网关无需 API Key）；其余为历史/占位标识，仅用于展示与老任务，评测时走确定性模拟引擎。
+# 单价为每 1k token（人民币元，估算，用于任务费用预估）。
 _MODELS = [
+    {"id": "qwen3.5-plus-online", "name": "Qwen3.5 Plus（联网）", "context": 262144, "input_price": 0.004, "output_price": 0.012, "live": True},
+    {"id": "qwen3.5-plus", "name": "Qwen3.5 Plus", "context": 262144, "input_price": 0.004, "output_price": 0.012, "live": True},
+    {"id": "qwen3.5-plus-offline", "name": "Qwen3.5 Plus（离线）", "context": 262144, "input_price": 0.004, "output_price": 0.012, "live": True},
     {"id": "deepseek-v4-flash", "name": "DeepSeek V4 Flash", "context": 1_000_000, "input_price": 0.001, "output_price": 0.006, "live": True},
-    {"id": "deepseek-v4-pro", "name": "DeepSeek V4 Pro", "context": 1_000_000, "input_price": 0.003, "output_price": 0.018, "live": True},
+    {"id": "deepseek-v4-flash-online", "name": "DeepSeek V4 Flash（联网）", "context": 1_000_000, "input_price": 0.001, "output_price": 0.006, "live": True},
+    {"id": "Qwen3-235B-A22B-Instruct-2507", "name": "Qwen3-235B-A22B-Instruct", "context": 262144, "input_price": 0.006, "output_price": 0.018, "live": True},
     {"id": "gpt-4.1", "name": "GPT-4.1（模拟）", "context": 128000, "input_price": 0.02, "output_price": 0.08, "live": False},
-    {"id": "deepseek-v3", "name": "DeepSeek-V3（模拟）", "context": 128000, "input_price": 0.005, "output_price": 0.02, "live": False},
-    {"id": "qwen-max", "name": "Qwen-Max（模拟）", "context": 32768, "input_price": 0.01, "output_price": 0.04, "live": False},
 ]
 
 
@@ -328,9 +351,11 @@ def _new_task(
     review_status: str = "NOT_STARTED",
     task_type: str = DEFAULT_TASK_TYPE,
     created_at: Optional[str] = None,
+    report_template_id: Optional[str] = None,
 ) -> dict[str, Any]:
     dataset = next(d for d in _datasets if d["id"] == dataset_id)
     benchmark = next(b for b in _benchmarks if b["id"] == benchmark_id)
+    rt = next((r for r in _report_templates if r["id"] == report_template_id), None)
     dims = benchmark["config"]["dimensions"]
     total_items = dataset["total_items"]
     avg_chars = round(dataset["total_chars"] / total_items) if total_items else 0
@@ -359,7 +384,7 @@ def _new_task(
         "estimated_tokens": input_tokens + output_tokens,
         "estimated_cost": cost,
         "estimated_duration_sec": duration,
-        "created_by": "孙颖",
+        "created_by": accounts.creator_name(),
         "created_at": created_at or now(),
         "error": None,
         "cancel": False,
@@ -367,12 +392,17 @@ def _new_task(
         "engine_downgraded": False,
         "actual_tokens": 0,
         "actual_cost": 0.0,
+        "report_template_id": rt["id"] if rt else None,
+        "report_template_name": rt["name"] if rt else None,
         "results": [],
     }
 
 
 # 平台不预置任何评测任务，全部由用户创建
 _tasks: list[dict[str, Any]] = []
+
+# 人工评估中心的标注任务（manual.py 的业务逻辑读写这个列表，与 _tasks 完全并行）。
+_manual_tasks: list[dict[str, Any]] = []
 
 # 启动时从 SQLite 恢复上次的状态（db.py）；原来这四个集合纯内存、进程一重启就清空，
 # 现在改成"重启读盘恢复"。.extend()/.update() 原地写入而不是重新赋值变量名，
@@ -381,14 +411,57 @@ _state = db_mod.load_state()
 _id_seq.update(_state["id_seq"])
 _benchmarks.extend(_state["benchmarks"])
 _datasets.extend(_state["datasets"])
+_report_templates.extend(_state["report_templates"])
 _tasks.extend(_state["tasks"])
+_manual_tasks.extend(_state["manual_tasks"])
+accounts.restore(_state["accounts"], _state["sessions"])
+accounts.seed_and_migrate(_datasets, _benchmarks, _tasks)
 del _state
+
+
+def _seed_builtin_report_template() -> None:
+    """首次启动（RT 序号未动过且无任何模板）时播种一份内置报告模板：evaluation-report 技能。
+    之后即使用户把它删光，也不再自动补回——就是一份初始数据。"""
+    if _report_templates or _id_seq["RT"] != 1000:
+        return
+    try:
+        skill = skills_registry.load_builtin_skill("evaluation-report")
+    except (KeyError, FileNotFoundError, ValueError):
+        return
+    skill.pop("skill_dir", None)
+    _report_templates.append(
+        {
+            "id": _next_id("RT"),
+            "name": "默认评估报告",
+            "description": "平台内置的评估总报告技能（evaluation-report）：整体结论→GSB 专项→分维度问题→典型错误 case→改进建议。",
+            "type": "SKILL",
+            "version": "v1.0",
+            "status": "VERIFIED",
+            "created_by": "系统内置",
+            "created_at": now(),
+            "updated_at": now(),
+            "config": {
+                "prompt_template": None,
+                "sections": [],
+                "skill": skill,
+                "skill_ref": {"source": "builtin", "skill_id": "evaluation-report", "skill_version": skill.get("version", "")},
+            },
+        }
+    )
+
+
+_seed_builtin_report_template()
+
+app.include_router(accounts.router)
 
 
 def _persist_state() -> None:
     """把当前内存状态整体落盘。调用方必须已持有 _lock——db.save_state 在锁内做
     json 序列化，避免快照期间被其它线程（比如后台评测线程）改到一半。"""
-    db_mod.save_state(_tasks, _benchmarks, _datasets, _id_seq)
+    db_mod.save_state(
+        _tasks, _benchmarks, _datasets, _id_seq, _report_templates, *accounts.snapshot(),
+        manual_tasks=_manual_tasks,
+    )
 
 
 def _persist_loop() -> None:
@@ -418,6 +491,29 @@ async def _persist_after_mutation(request, call_next):
         except Exception:  # noqa: BLE001 - 持久化失败不应该影响本次请求已经返回的响应
             pass
     return response
+
+
+# 需要登录才能访问的接口前缀里，这些子路径豁免（登录本身 + 非 /api 的静态资源/健康检查）
+_AUTH_EXEMPT = {"/api/auth/login"}
+
+
+@app.middleware("http")
+async def _require_auth(request: Request, call_next):
+    """统一入口鉴权：/api/* 一律需要有效会话；除 /api/auth/* 外还需在组织内。
+    在一处集中处理，避免给每个业务路由挂 Depends。"""
+    path = request.url.path
+    if not path.startswith("/api/") or path in _AUTH_EXEMPT:
+        return await call_next(request)
+    account = accounts.resolve(request)
+    if not account:
+        return JSONResponse({"detail": "请先登录"}, status_code=401)
+    if not path.startswith("/api/auth/") and not account.get("org_id"):
+        return JSONResponse({"detail": "你尚未加入任何组织，请联系组织成员邀请你加入"}, status_code=403)
+    token = accounts.bind(account)
+    try:
+        return await call_next(request)
+    finally:
+        accounts.unbind(token)
 
 
 # ---- API 模型 ----
@@ -452,6 +548,20 @@ class BenchmarkUpdate(BenchmarkCreate):
     pass
 
 
+class ReportTemplateCreate(BaseModel):
+    name: str
+    description: str = ""
+    tpl_type: str = "PROMPT"  # PROMPT | SKILL
+    prompt_template: Optional[str] = None
+    sections: list[str] = []
+    skill: Optional[dict[str, Any]] = None
+    skill_ref: Optional[dict[str, Any]] = None
+
+
+class ReportTemplateUpdate(ReportTemplateCreate):
+    pass
+
+
 class TaskCreate(BaseModel):
     name: str
     description: str = ""
@@ -459,6 +569,8 @@ class TaskCreate(BaseModel):
     benchmark_id: str
     dataset_id: str
     judge_model: str = "deepseek-v4-flash"
+    # 评估报告模板 ID（在「评估报告模板」模块维护）；None / 不存在时任务完成回退确定性五段式模板
+    report_template_id: Optional[str] = None
 
 
 class TaskUpdate(TaskCreate):
@@ -647,7 +759,7 @@ def _failed_result(sample: dict[str, Any], benchmark: dict[str, Any], err: str) 
 
 
 def _run_evaluation(task_id: str) -> None:
-    """异步执行评测：按 config.engine_for 决定走真实 DeepSeek 调用还是确定性模拟；
+    """异步执行评测：按 config.engine_for 决定走大模型网关真实调用还是确定性模拟；
     真实调用用线程池并发，失败率过高时对剩余条目自动降级为模拟（技术方案 §7.3 / §8.5.6）。"""
 
     def run() -> None:
@@ -675,7 +787,7 @@ def _run_evaluation(task_id: str) -> None:
             with _lock:
                 t = _find_task(task_id)
                 t["status"] = "FAILED"
-                t["error"] = f"评测引擎为 agent，但裁判员模型「{model}」未接入或未配置 DEEPSEEK_API_KEY"
+                t["error"] = f"评测引擎为 agent，但裁判员模型「{model}」不在大模型网关可用列表内"
             return
 
         price = _model_price(model)
@@ -725,11 +837,32 @@ def _run_evaluation(task_id: str) -> None:
                 if eng == "simulated":
                     time.sleep(0.02)
 
+        # 全部样本都失败（例如网关不可用 / 结构化输出持续不合规）时，标记任务为执行失败，
+        # 让用户能直接「重试」，而不是拿到一份空报告。
+        task = _find_task(task_id)
+        results = task.get("results", [])
+        if results and all(r.get("status") == "FAILED" for r in results):
+            first_err = next((r.get("error") for r in results if r.get("error")), "")
+            with _lock:
+                task["status"] = "FAILED"
+                task["error"] = f"全部 {len(results)} 条样本评测失败：{first_err}"
+                task["report"] = None
+            return
+
+        # 评测跑完先把任务标记为已完成，让列表/详情页的状态与进度立即到位；
+        # 报告生成含一次裁判员模型调用（自由格式 Markdown），耗时可达数十秒，
+        # 放在标记完成之后、锁之外单独做，报告没好之前 report 为 None（前端展示"生成中"）。
         with _lock:
-            task = _find_task(task_id)
             task["status"] = "COMPLETED"
             task["review_status"] = "NOT_STARTED"
-            task["report"] = _make_report(task, task["results"])
+            task["report"] = None
+        try:
+            report = _make_report(task, task["results"])
+        except Exception:  # noqa: BLE001 - 报告失败不影响任务完成
+            logging.getLogger(__name__).exception("任务 %s 报告生成失败", task_id)
+            report = None
+        with _lock:
+            task["report"] = report
 
     threading.Thread(target=run, daemon=True).start()
 
@@ -879,7 +1012,7 @@ def create_dataset(body: DatasetCreate) -> dict[str, Any]:
         "total_items": len(samples),
         "total_chars": _chars(samples),
         "status": "READY",
-        "created_by": "孙颖",
+        "created_by": accounts.creator_name(),
         "created_at": now(),
         "samples": samples,
     }
@@ -937,7 +1070,7 @@ async def upload_dataset(
         "total_items": len(samples),
         "total_chars": _chars(samples),
         "status": "READY",
-        "created_by": "孙颖",
+        "created_by": accounts.creator_name(),
         "created_at": now(),
         "samples": samples,
     }
@@ -999,10 +1132,12 @@ def list_benchmarks(eval_type: str = "", eval_method: str = "", created_by: str 
     return {"items": [_benchmark_out(b) for b in items]}
 
 
-def _resolve_skill(body: BenchmarkCreate) -> tuple[Optional[dict[str, Any]], Optional[dict[str, Any]]]:
+def _resolve_skill(
+    skill_ref: Optional[dict[str, Any]], uploaded: Optional[dict[str, Any]]
+) -> tuple[Optional[dict[str, Any]], Optional[dict[str, Any]]]:
     """返回 (skill_config, skill_ref)。source=builtin 时按 skill_id 从仓库 skills/ 加载并记录
-    版本快照（技术方案 §8.5.3）；source=custom 沿用上传解析结果。"""
-    ref = body.skill_ref or {}
+    版本快照（技术方案 §8.5.3）；source=custom 沿用上传解析结果。评估基准 / 评估报告模板共用。"""
+    ref = skill_ref or {}
     if ref.get("source") == "builtin":
         sid = str(ref.get("skill_id") or "")
         try:
@@ -1011,8 +1146,8 @@ def _resolve_skill(body: BenchmarkCreate) -> tuple[Optional[dict[str, Any]], Opt
             raise HTTPException(status_code=422, detail=f"内置技能加载失败：{exc}")
         skill.pop("skill_dir", None)  # 不向前端暴露服务器绝对路径
         return skill, {"source": "builtin", "skill_id": sid, "skill_version": skill.get("version", "")}
-    if body.skill:
-        return body.skill, {"source": "custom", "skill_id": body.skill.get("name", "")}
+    if uploaded:
+        return uploaded, {"source": "custom", "skill_id": uploaded.get("name", "")}
     return None, None
 
 
@@ -1027,7 +1162,7 @@ def _apply_benchmark_body(benchmark: dict[str, Any], body: BenchmarkCreate) -> N
     benchmark["eval_method_label"] = body.eval_method_label
     benchmark["config"]["dimensions"] = dimensions
     if body.eval_type == "SKILL":
-        skill, skill_ref = _resolve_skill(body)
+        skill, skill_ref = _resolve_skill(body.skill_ref, body.skill)
         if skill:
             benchmark["config"]["skill"] = skill
             benchmark["config"]["skill_ref"] = skill_ref
@@ -1065,7 +1200,7 @@ def create_benchmark(body: BenchmarkCreate) -> dict[str, Any]:
         use_count=0,
         eval_method_label=body.eval_method_label,
     )
-    benchmark["created_by"] = "孙颖"
+    benchmark["created_by"] = accounts.creator_name()
     benchmark["created_at"] = now()
     benchmark["updated_at"] = now()
     _apply_benchmark_body(benchmark, body)
@@ -1179,7 +1314,7 @@ def copy_benchmark(benchmark_id: str) -> dict[str, Any]:
     clone["version"] = "v1.0"
     clone["status"] = "DRAFT"
     clone["use_count"] = 0
-    clone["created_by"] = "孙颖"
+    clone["created_by"] = accounts.creator_name()
     clone["created_at"] = now()
     clone["updated_at"] = now()
     with _lock:
@@ -1196,6 +1331,129 @@ def delete_benchmark(benchmark_id: str) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail=f"评估基准正被任务引用（{names} 等），无法删除")
     with _lock:
         _benchmarks.remove(benchmark)
+    return {"ok": True}
+
+
+# ---- 评估报告模板 ----
+
+
+def _find_report_template(rt_id: str) -> dict[str, Any]:
+    for r in _report_templates:
+        if r["id"] == rt_id:
+            return r
+    raise HTTPException(status_code=404, detail="评估报告模板不存在")
+
+
+def _tasks_using_report_template(rt_id: str) -> list[dict[str, Any]]:
+    return [t for t in _tasks if t.get("report_template_id") == rt_id]
+
+
+def _report_template_out(r: dict[str, Any]) -> dict[str, Any]:
+    out = dict(r)
+    out["use_count"] = len(_tasks_using_report_template(r["id"]))
+    return out
+
+
+def _apply_report_template_body(rt: dict[str, Any], body: ReportTemplateCreate) -> None:
+    rt["name"] = body.name.strip()
+    rt["description"] = body.description
+    rt["type"] = body.tpl_type
+    cfg = rt.setdefault("config", {})
+    if body.tpl_type == "SKILL":
+        skill, skill_ref = _resolve_skill(body.skill_ref, body.skill)
+        if not skill:
+            raise HTTPException(status_code=422, detail="技能类型报告模板需要选择内置技能或上传技能包")
+        cfg["skill"] = skill
+        cfg["skill_ref"] = skill_ref
+        cfg["prompt_template"] = None
+        cfg["sections"] = []
+    else:
+        cfg["prompt_template"] = (body.prompt_template or "").strip() or report_mod.DEFAULT_REPORT_PROMPT
+        sections = [s.strip() for s in body.sections if s and s.strip()]
+        cfg["sections"] = sections or list(report_mod.DEFAULT_REPORT_SECTIONS)
+        cfg["skill"] = None
+        cfg.pop("skill_ref", None)
+
+
+@app.get("/api/report-templates")
+def list_report_templates(tpl_type: str = "", created_by: str = "", q: str = "") -> dict[str, Any]:
+    items = list(_report_templates)
+    if tpl_type:
+        items = [r for r in items if r["type"] == tpl_type]
+    if created_by:
+        items = [r for r in items if r["created_by"] == created_by]
+    if q:
+        items = [r for r in items if q.lower() in r["name"].lower() or q.lower() in r["id"].lower()]
+    return {"items": [_report_template_out(r) for r in items]}
+
+
+@app.post("/api/report-templates")
+def create_report_template(body: ReportTemplateCreate) -> dict[str, Any]:
+    if not body.name.strip():
+        raise HTTPException(status_code=400, detail="请填写报告模板名称")
+    if any(r["name"] == body.name.strip() for r in _report_templates):
+        raise HTTPException(status_code=400, detail="已存在同名评估报告模板")
+    rt = {
+        "id": _next_id("RT"),
+        "name": body.name.strip(),
+        "description": body.description,
+        "type": body.tpl_type,
+        "version": "v1.0",
+        "status": "VERIFIED",
+        "created_by": accounts.creator_name(),
+        "created_at": now(),
+        "updated_at": now(),
+        "config": {},
+    }
+    _apply_report_template_body(rt, body)
+    with _lock:
+        _report_templates.append(rt)
+    return _report_template_out(rt)
+
+
+@app.get("/api/report-templates/{rt_id}")
+def get_report_template(rt_id: str) -> dict[str, Any]:
+    rt = _find_report_template(rt_id)
+    out = _report_template_out(rt)
+    out["used_by"] = [{"id": t["id"], "name": t["name"], "status": t["status"]} for t in _tasks_using_report_template(rt_id)]
+    return out
+
+
+@app.put("/api/report-templates/{rt_id}")
+def update_report_template(rt_id: str, body: ReportTemplateUpdate) -> dict[str, Any]:
+    rt = _find_report_template(rt_id)
+    if any(r["name"] == body.name.strip() and r["id"] != rt_id for r in _report_templates):
+        raise HTTPException(status_code=400, detail="已存在同名评估报告模板")
+    with _lock:
+        _apply_report_template_body(rt, body)
+        rt["updated_at"] = now()
+    return _report_template_out(rt)
+
+
+@app.post("/api/report-templates/{rt_id}/copy")
+def copy_report_template(rt_id: str) -> dict[str, Any]:
+    source = _find_report_template(rt_id)
+    clone = json.loads(json.dumps(source))
+    clone["id"] = _next_id("RT")
+    clone["name"] = f"{source['name']}_副本"
+    clone["version"] = "v1.0"
+    clone["created_by"] = accounts.creator_name()
+    clone["created_at"] = now()
+    clone["updated_at"] = now()
+    with _lock:
+        _report_templates.append(clone)
+    return _report_template_out(clone)
+
+
+@app.delete("/api/report-templates/{rt_id}")
+def delete_report_template(rt_id: str) -> dict[str, Any]:
+    rt = _find_report_template(rt_id)
+    using = _tasks_using_report_template(rt_id)
+    if using:
+        names = "、".join(t["name"] for t in using[:3])
+        raise HTTPException(status_code=400, detail=f"评估报告模板正被任务引用（{names} 等），无法删除")
+    with _lock:
+        _report_templates.remove(rt)
     return {"ok": True}
 
 
@@ -1245,6 +1503,7 @@ def create_task(body: TaskCreate) -> dict[str, Any]:
         "CREATED",
         0,
         task_type=body.task_type,
+        report_template_id=body.report_template_id,
     )
     with _lock:
         _tasks.insert(0, task)
@@ -1302,6 +1561,7 @@ def update_task(task_id: str, body: TaskUpdate) -> dict[str, Any]:
             task["review_status"],
             task_type=body.task_type,
             created_at=task["created_at"],
+            report_template_id=body.report_template_id,
         )
         rebuilt["created_by"] = task["created_by"]
         rebuilt["error"] = None
@@ -1325,6 +1585,7 @@ def copy_task(task_id: str) -> dict[str, Any]:
         "CREATED",
         0,
         task_type=source["task_type"],
+        report_template_id=source.get("report_template_id"),
     )
     with _lock:
         _tasks.insert(0, clone)
@@ -1349,8 +1610,18 @@ def execute_task(task_id: str) -> dict[str, Any]:
     if config.JUDGE_ENGINE == "agent" and not llm.is_live(task["judge_model"]):
         raise HTTPException(
             status_code=400,
-            detail=f"评测引擎为 agent，但裁判员模型「{task['judge_model']}」未接入或未配置 DEEPSEEK_API_KEY",
+            detail=f"评测引擎为 agent，但裁判员模型「{task['judge_model']}」不在大模型网关可用列表内",
         )
+    if config.engine_for(task["judge_model"]) == "agent":
+        try:
+            remaining = int(llm.fetch_quota(timeout=5).get("remaining_calls", 1))
+        except (llm.LlmError, ValueError, TypeError):
+            remaining = 1  # 网关额度查询失败不阻断执行，交由评测过程中的失败熔断兜底
+        if remaining <= 0:
+            raise HTTPException(
+                status_code=400,
+                detail=f"今日模型调用额度已用完（{config.LLM_DAILY_CALL_LIMIT} 次/天），请明日再执行",
+            )
     with _lock:
         task["results"] = []
         task["progress_done"] = 0
@@ -1394,7 +1665,7 @@ def task_report_markdown(task_id: str) -> Response:
     if not report:
         raise HTTPException(status_code=404, detail="报告尚未生成")
     ok = [r for r in task.get("results", []) if r.get("status") == "SUCCESS"]
-    markdown = report_mod.report_to_markdown(task, report, ok)
+    markdown = report.get("markdown") or report_mod.report_to_markdown(task, report, ok)
     return Response(
         content=markdown,
         media_type="text/markdown; charset=utf-8",
@@ -1486,8 +1757,50 @@ def review_task(task_id: str, body: ReviewUpdate) -> dict[str, Any]:
 
 @app.get("/api/models")
 def list_models() -> dict[str, Any]:
-    key_configured = bool(config.DEEPSEEK_API_KEY)
-    items = [
-        {**m, "available": m["live"] and key_configured} for m in _MODELS
-    ]
-    return {"items": items, "engine": config.JUDGE_ENGINE, "key_configured": key_configured}
+    # 网关无需 API Key，live 模型即视为可用。
+    items = [{**m, "available": m["live"]} for m in _MODELS]
+    return {"items": items, "engine": config.JUDGE_ENGINE, "key_configured": True}
+
+
+@app.get("/api/quota")
+def model_quota() -> dict[str, Any]:
+    """当日大模型调用额度（供顶部导航栏展示）。优先取网关 /v1/quota，不可达时回退本地计数。"""
+    limit = config.LLM_DAILY_CALL_LIMIT
+    try:
+        q = llm.fetch_quota(timeout=8)
+        calls = int(q.get("calls") or 0)
+        remaining = q.get("remaining_calls")
+        return {
+            "calls": calls,
+            "limit": limit,
+            "remaining_calls": int(remaining) if remaining is not None else max(0, limit - calls),
+            "cost_yuan": q.get("cost_yuan"),
+            "remaining_budget_yuan": q.get("remaining_budget_yuan"),
+            "source": "gateway",
+        }
+    except (llm.LlmError, ValueError, TypeError):
+        calls = llm.local_calls_today()
+        return {
+            "calls": calls,
+            "limit": limit,
+            "remaining_calls": max(0, limit - calls),
+            "cost_yuan": None,
+            "remaining_budget_yuan": None,
+            "source": "local",
+        }
+
+
+# ---- 人工评估中心 ----
+# manual.py 不 import main（避免 import 环），改由这里在 main 自身初始化完成后注入所需句柄。
+from . import manual as _manual  # noqa: E402
+
+_manual.init(
+    tasks=_manual_tasks,
+    lock=_lock,
+    next_id=_next_id,
+    persist=_persist_state,
+    parse_rows=_parse_upload_rows,
+    models=_MODELS,
+    report_templates=_report_templates,
+)
+app.include_router(_manual.router)

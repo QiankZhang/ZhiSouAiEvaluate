@@ -5,6 +5,8 @@ import {
   STATUS_LABELS,
   METHOD_LABELS,
   DEFAULT_TASK_TYPES,
+  DEFAULT_REPORT_SECTIONS,
+  DEFAULT_REPORT_PROMPT,
   REVIEW_LABELS,
   RESULT_REVIEW_LABELS,
   SOURCE_LABELS,
@@ -14,6 +16,7 @@ import {
   scoreTone,
 } from "./api.js";
 import { toast } from "./toast.js";
+import { Markdown } from "./markdown.jsx";
 import {
   Badge,
   Button,
@@ -42,10 +45,13 @@ const BASE_METHOD_OPTIONS = [
   { mechanism: "GSB", label: "GSB 对比" },
 ];
 
+// 全平台统一默认维度：相关性 / 全面性 / 准确性 / 可读性 / 时效性，各 20%
 const DEFAULT_DIMS = [
-  { key: "relevance", name: "相关性", weight: 40 },
-  { key: "quality", name: "内容质量", weight: 30 },
-  { key: "format", name: "呈现格式", weight: 30 },
+  { key: "relevance", name: "相关性", weight: 20 },
+  { key: "comprehensiveness", name: "全面性", weight: 20 },
+  { key: "accuracy", name: "准确性", weight: 20 },
+  { key: "readability", name: "可读性", weight: 20 },
+  { key: "timeliness", name: "时效性", weight: 20 },
 ];
 
 const DEFAULT_PROMPT =
@@ -53,7 +59,7 @@ const DEFAULT_PROMPT =
 
 const DEFAULT_GSB_RULES = "实验优于基线为 Good，持平为 Same，劣于基线为 Bad";
 
-// 裁判员模型默认值：全平台统一默认走 DeepSeek Flash（真实调用）
+// 裁判员模型默认值 / 推荐项：全平台统一默认走 DeepSeek V4 Flash，真实调用（见 API.md）
 const DEFAULT_JUDGE_MODEL = "deepseek-v4-flash";
 
 const MULTI_OUTPUT_SAMPLE = `{
@@ -247,7 +253,19 @@ export function OverviewPage() {
 }
 /* ---------------- 评估中心 ---------------- */
 
-function CreateTaskModal({ open, task, onClose, benchmarks, datasets, models, taskTypeOptions, onSaved, onDatasetsChanged }) {
+function CreateTaskModal({
+  open,
+  task,
+  onClose,
+  benchmarks,
+  datasets,
+  models,
+  reportTemplates = [],
+  taskTypeOptions,
+  onSaved,
+  onDatasetsChanged,
+  onReportTemplatesChanged,
+}) {
   const isEdit = Boolean(task);
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
@@ -255,6 +273,8 @@ function CreateTaskModal({ open, task, onClose, benchmarks, datasets, models, ta
   const [benchmarkId, setBenchmarkId] = useState("");
   const [datasetId, setDatasetId] = useState("");
   const [modelId, setModelId] = useState(DEFAULT_JUDGE_MODEL);
+  const [reportTemplateId, setReportTemplateId] = useState("");
+  const [showCreateTemplate, setShowCreateTemplate] = useState(false);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState("");
   const [localDatasets, setLocalDatasets] = useState(datasets);
@@ -274,6 +294,7 @@ function CreateTaskModal({ open, task, onClose, benchmarks, datasets, models, ta
       setBenchmarkId(task.benchmark_id);
       setDatasetId(task.dataset_id);
       setModelId(task.judge_model);
+      setReportTemplateId(task.report_template_id || "");
     } else {
       setName("");
       setDescription("");
@@ -281,10 +302,18 @@ function CreateTaskModal({ open, task, onClose, benchmarks, datasets, models, ta
       setBenchmarkId("");
       setDatasetId("");
       setModelId(DEFAULT_JUDGE_MODEL);
+      setReportTemplateId(reportTemplates[0]?.id || "");
     }
-  }, [open, task]);
+  }, [open, task]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // 模型列表就绪后，若当前选择不在列表内则回落到默认（DeepSeek Flash）
+  // 报告模板列表就绪 / 新建后：新建任务默认选第一个
+  useEffect(() => {
+    if (open && !task && !reportTemplateId && reportTemplates.length) {
+      setReportTemplateId(reportTemplates[0].id);
+    }
+  }, [open, task, reportTemplates, reportTemplateId]);
+
+  // 模型列表就绪后，若当前选择不在列表内则回落到默认（DeepSeek V4 Flash）
   useEffect(() => {
     if (!models.length) return;
     if (!models.some((m) => m.id === modelId)) {
@@ -297,6 +326,15 @@ function CreateTaskModal({ open, task, onClose, benchmarks, datasets, models, ta
   // 评估方式不再单独选择，由选中的评估基准隐式决定，再据此过滤可选数据集
   const evalMethod = benchmark?.eval_method || "";
   const datasetsForMethod = evalMethod ? localDatasets.filter((d) => d.eval_method === evalMethod) : localDatasets;
+
+  const reportTemplate = reportTemplates.find((r) => r.id === reportTemplateId) || null;
+
+  function handleTemplateCreated(rt) {
+    onReportTemplatesChanged?.();
+    setReportTemplateId(rt.id);
+    setShowCreateTemplate(false);
+  }
+
   const datasetMethodOptions = useMemo(() => {
     const map = new Map();
     BASE_METHOD_OPTIONS.forEach((o) => map.set(o.label, o));
@@ -353,10 +391,22 @@ function CreateTaskModal({ open, task, onClose, benchmarks, datasets, models, ta
       benchmark_id: benchmarkId,
       dataset_id: datasetId,
       judge_model: modelId,
+      report_template_id: reportTemplateId || null,
     };
     try {
       const saved = isEdit ? await api.put(`/api/tasks/${task.id}`, payload) : await api.post("/api/tasks", payload);
-      toast.success(isEdit ? "任务已更新" : "任务已创建");
+      if (isEdit) {
+        toast.success("任务已更新");
+      } else {
+        // 创建后自动开始评测，无需再手动点「执行评测」
+        try {
+          await api.post(`/api/tasks/${saved.id}/execute`);
+          saved.status = "RUNNING";
+          toast.success("任务已创建并开始执行");
+        } catch (execErr) {
+          toast.error(`任务已创建，但自动开始失败：${execErr.message}，可在列表中手动执行`);
+        }
+      }
       onSaved(saved);
     } catch (err) {
       setMessage(err.message);
@@ -448,15 +498,42 @@ function CreateTaskModal({ open, task, onClose, benchmarks, datasets, models, ta
         </div>
       </Field>
 
-      <Field label="AI 裁判员模型" required hint="默认 DeepSeek Flash（真实调用）">
+      <Field label="AI 裁判员模型" required hint="默认 DeepSeek V4 Flash（推荐）">
         <select className="select" value={modelId} onChange={(e) => setModelId(e.target.value)}>
           {models.map((m) => (
             <option key={m.id} value={m.id}>
               {m.name}（上下文 {Math.round(m.context / 1000)}k · 输入 ¥{m.input_price}/1k tokens）
-              {m.id === DEFAULT_JUDGE_MODEL ? " · 默认" : m.live ? "" : " · 走模拟引擎"}
+              {m.id === DEFAULT_JUDGE_MODEL ? " · 推荐（默认）" : m.live ? "" : " · 走模拟引擎"}
             </option>
           ))}
         </select>
+      </Field>
+
+      <Field label="评估报告模板" hint="在「评估报告模板」模块维护；任务完成时按此模板生成 Markdown 报告">
+        <div className="inline" style={{ gap: 8, width: "100%" }}>
+          <select className="select" style={{ flex: 1 }} value={reportTemplateId} onChange={(e) => setReportTemplateId(e.target.value)}>
+            <option value="">不生成智能报告（用内置固定模板）</option>
+            {reportTemplates.map((r) => (
+              <option key={r.id} value={r.id}>
+                {r.name}（{r.type === "SKILL" ? "技能" : "提示词"}）
+              </option>
+            ))}
+          </select>
+          <Button icon="plus" onClick={() => setShowCreateTemplate(true)}>
+            新建报告模板
+          </Button>
+        </div>
+        {reportTemplate ? (
+          <div className="card" style={{ padding: 12, marginTop: 8, fontSize: 12, color: "var(--text-secondary)" }}>
+            {reportTemplate.description || "（无描述）"}
+            {reportTemplate.type === "PROMPT" && reportTemplate.config?.sections?.length ? (
+              <div className="mt-8">章节：{reportTemplate.config.sections.join(" · ")}</div>
+            ) : null}
+            {reportTemplate.type === "SKILL" && reportTemplate.config?.skill?.name ? (
+              <div className="mt-8">技能：{reportTemplate.config.skill.name}</div>
+            ) : null}
+          </div>
+        ) : null}
       </Field>
 
       {estimate ? (
@@ -478,6 +555,12 @@ function CreateTaskModal({ open, task, onClose, benchmarks, datasets, models, ta
         onCreated={handleDatasetCreated}
         methodOptions={datasetMethodOptions}
       />
+      <CreateReportTemplateModal
+        open={showCreateTemplate}
+        template={null}
+        onClose={() => setShowCreateTemplate(false)}
+        onSaved={handleTemplateCreated}
+      />
     </Modal>
   );
 }
@@ -488,6 +571,7 @@ export function TasksPage({ navigate }) {
   const [method, setMethod] = useState("");
   const [taskType, setTaskType] = useState("");
   const [judgeModel, setJudgeModel] = useState("");
+  const [createdBy, setCreatedBy] = useState("");
   const [page, setPage] = useState(1);
   const [formOpen, setFormOpen] = useState(false);
   const [formTask, setFormTask] = useState(null);
@@ -498,28 +582,48 @@ export function TasksPage({ navigate }) {
   const benchmarks = useLoad(() => api.get("/api/benchmarks"), []);
   const datasets = useLoad(() => api.get("/api/datasets"), []);
   const models = useLoad(() => api.get("/api/models"), []);
+  const reportTemplates = useLoad(() => api.get("/api/report-templates"), []);
 
   const allTasks = tasks.data?.items || [];
   const taskTypes = useMemo(
     () => Array.from(new Set([...DEFAULT_TASK_TYPES, ...allTasks.map((t) => t.task_type).filter(Boolean)])),
     [allTasks]
   );
+  const creators = useMemo(
+    () => Array.from(new Set(allTasks.map((t) => t.created_by).filter(Boolean))),
+    [allTasks]
+  );
 
   const filtered = useMemo(() => {
     return allTasks.filter((t) => {
       const q = search.trim().toLowerCase();
-      if (q && !t.name.toLowerCase().includes(q) && !t.id.toLowerCase().includes(q)) return false;
+      if (
+        q &&
+        !t.name.toLowerCase().includes(q) &&
+        !t.id.toLowerCase().includes(q) &&
+        !(t.created_by || "").toLowerCase().includes(q)
+      )
+        return false;
       if (status && t.status !== status) return false;
       if (method && t.eval_method !== method) return false;
       if (taskType && t.task_type !== taskType) return false;
       if (judgeModel && t.judge_model !== judgeModel) return false;
+      if (createdBy && t.created_by !== createdBy) return false;
       return true;
     });
-  }, [allTasks, search, status, method, taskType, judgeModel]);
+  }, [allTasks, search, status, method, taskType, judgeModel, createdBy]);
 
   useEffect(() => {
     setPage(1);
-  }, [search, status, method, taskType, judgeModel]);
+  }, [search, status, method, taskType, judgeModel, createdBy]);
+
+  // 有任务在执行中时轮询刷新列表，状态/进度自动更新，无需手动刷新
+  const hasRunning = allTasks.some((t) => t.status === "RUNNING");
+  useEffect(() => {
+    if (!hasRunning) return undefined;
+    const timer = setInterval(() => tasks.reload(), 2000);
+    return () => clearInterval(timer);
+  }, [hasRunning, tasks.reload]);
 
   const { pageItems, total, totalPages } = paginate(filtered, page);
 
@@ -575,6 +679,9 @@ export function TasksPage({ navigate }) {
   function menuFor(t) {
     if (t.status === "COMPLETED") {
       return [
+        t.review_status === "COMPLETED"
+          ? { label: "人工审核", icon: "check", onClick: () => navigate(`/tasks/${t.id}`) }
+          : { label: "查看报告", icon: "chart", onClick: () => navigate(`/tasks/${t.id}/report`) },
         { label: "复制任务", icon: "copy", onClick: () => copyTask(t) },
         { label: "下载测试集", icon: "download", onClick: () => downloadTestSet(t) },
         { label: "删除任务", icon: "trash", danger: true, onClick: () => setConfirmDelete(t) },
@@ -625,9 +732,15 @@ export function TasksPage({ navigate }) {
       render: (t) => (
         <div className="inline" onClick={(e) => e.stopPropagation()}>
           {t.status === "COMPLETED" ? (
-            <Button size="sm" variant="primary" onClick={() => navigate(`/tasks/${t.id}/report`)}>
-              查看报告
-            </Button>
+            t.review_status === "COMPLETED" ? (
+              <Button size="sm" variant="primary" onClick={() => navigate(`/tasks/${t.id}/report`)}>
+                查看报告
+              </Button>
+            ) : (
+              <Button size="sm" variant="primary" onClick={() => navigate(`/tasks/${t.id}`)}>
+                人工审核
+              </Button>
+            )
           ) : null}
           {t.status === "RUNNING" ? (
             <Button size="sm" onClick={() => stop(t)}>
@@ -655,7 +768,7 @@ export function TasksPage({ navigate }) {
       <div className="page-head">
         <div>
           <div className="page-title">智搜策略效果评估</div>
-          <div className="page-desc">评估中心 · 任务管理</div>
+          <div className="page-desc">AI评估中心 · 任务管理</div>
         </div>
         <Button variant="primary" icon="plus" onClick={() => { setFormTask(null); setFormOpen(true); }}>
           创建评测任务
@@ -670,7 +783,7 @@ export function TasksPage({ navigate }) {
         <div className="toolbar filter-bar" style={{ padding: "16px 20px" }}>
           <div className="search-input">
             <Icon name="search" size={16} />
-            <input className="input" placeholder="搜索任务名 / ID" value={search} onChange={(e) => setSearch(e.target.value)} />
+            <input className="input" placeholder="搜索任务名 / ID / 创建人" value={search} onChange={(e) => setSearch(e.target.value)} />
           </div>
           <select className="select" style={{ width: 120 }} value={status} onChange={(e) => setStatus(e.target.value)}>
             <option value="">全部状态</option>
@@ -701,14 +814,22 @@ export function TasksPage({ navigate }) {
               </option>
             ))}
           </select>
+          <select className="select" style={{ width: 130 }} value={createdBy} onChange={(e) => setCreatedBy(e.target.value)}>
+            <option value="">全部创建人</option>
+            {creators.map((c) => (
+              <option key={c} value={c}>
+                {c}
+              </option>
+            ))}
+          </select>
           <span className="spacer" />
           <span className="text-tertiary" style={{ fontSize: 12 }}>
             共 {total} 个任务
           </span>
         </div>
-        {tasks.loading ? (
+        {tasks.loading && !tasks.data ? (
           <Loading />
-        ) : tasks.error ? (
+        ) : tasks.error && !tasks.data ? (
           <ErrorBox message={tasks.error} />
         ) : (
           <Table columns={columns} data={pageItems} onRowClick={(t) => navigate(`/tasks/${t.id}`)} />
@@ -723,9 +844,11 @@ export function TasksPage({ navigate }) {
         benchmarks={benchmarks.data?.items || []}
         datasets={datasets.data?.items || []}
         models={models.data?.items || []}
+        reportTemplates={reportTemplates.data?.items || []}
         taskTypeOptions={taskTypes}
         onSaved={() => { setFormOpen(false); tasks.reload(); }}
         onDatasetsChanged={() => datasets.reload()}
+        onReportTemplatesChanged={() => reportTemplates.reload()}
       />
 
       <ConfirmDialog
@@ -741,21 +864,6 @@ export function TasksPage({ navigate }) {
   );
 }
 /* ---------------- 任务详情 ---------------- */
-
-// 章节标题严格对齐 evaluation-report 技能 / report.py 生成的 Markdown 结构
-// （一 整体结论 → 二 GSB 专项评估 / 三 分维度问题分析 → 四 典型错误 case 分析 → 五 改进建议），
-// 页面上直接看到的层级和复制出去的 Markdown 一一对应，不需要来回比对。
-function SectionHeading({ index, title, sub }) {
-  return (
-    <div className="section-heading">
-      <span className="section-index">{index}</span>
-      <div>
-        <h3 className="card-title" style={{ margin: 0 }}>{title}</h3>
-        {sub ? <p className="card-sub" style={{ margin: "2px 0 0" }}>{sub}</p> : null}
-      </div>
-    </div>
-  );
-}
 
 function GsbProportionBar({ good, same, bad }) {
   const total = good + same + bad;
@@ -777,23 +885,7 @@ function GsbProportionBar({ good, same, bad }) {
   );
 }
 
-function ScoreDistribution({ distribution }) {
-  const entries = Object.entries(distribution || {});
-  const max = Math.max(1, ...entries.map(([, v]) => v));
-  if (!entries.length) return null;
-  return (
-    <div className="bar-chart mt-8">
-      {entries.map(([score, count]) => (
-        <div className="bar-col" key={score}>
-          <span className="bar-value">{count}</span>
-          <div className="bar" style={{ height: `${Math.max(4, (count / max) * 120)}px` }} />
-          <span className="bar-label">{score} 分</span>
-        </div>
-      ))}
-    </div>
-  );
-}
-
+// 报告顶部指标卡：结构化速览数据；下钻分析、错误 case、建议等由模型生成的 Markdown 正文承载
 function ReportView({ report }) {
   const content = report?.content || {};
   const summary = content.summary || {};
@@ -806,213 +898,61 @@ function ReportView({ report }) {
     const same = summary.same || 0;
     const bad = summary.bad || 0;
     const netWinRate = summary.net_win_rate || 0;
-    // 与 report.py::report_to_markdown 的核心结论判定逻辑保持一致
-    const verdict = netWinRate < 0 ? "整体弱于基线" : "整体持平或占优基线";
     return (
-      <>
-        <section className="card report-hero mt-16">
-          <SectionHeading index="一" title="整体结论" />
-          <p className="report-verdict mt-16">
-            <strong>{verdict}</strong>：被判 Bad 的样本集中体现召回与整合环节的短板。
-          </p>
-          <p className="card-sub">
-            GSB 速览：G : S : B = {good} : {same} : {bad}，胜率 {summary.win_rate}%，净胜率{" "}
-            <strong style={{ color: netWinRate < 0 ? "var(--warning)" : "var(--success)" }}>{netWinRate}%</strong>
-          </p>
-          <GsbProportionBar good={good} same={same} bad={bad} />
-        </section>
-
-        <section className="card mt-16">
-          <SectionHeading index="二" title="GSB 专项评估" />
-          <div className="metric-grid mt-16" style={{ gridTemplateColumns: "repeat(5, 1fr)" }}>
-            <div className="metric-card">
-              <div className="metric-label">Good</div>
-              <div className="metric-value" style={{ color: "var(--success)" }}>{good}</div>
-            </div>
-            <div className="metric-card">
-              <div className="metric-label">Same</div>
-              <div className="metric-value" style={{ color: "var(--brand-dark)" }}>{same}</div>
-            </div>
-            <div className="metric-card">
-              <div className="metric-label">Bad</div>
-              <div className="metric-value" style={{ color: "var(--warning)" }}>{bad}</div>
-            </div>
-            <div className="metric-card">
-              <div className="metric-label">胜率</div>
-              <div className="metric-value">{summary.win_rate}<span className="metric-unit">%</span></div>
-            </div>
-            <div className="metric-card">
-              <div className="metric-label">净胜率</div>
-              <div className="metric-value" style={{ color: netWinRate < 0 ? "var(--warning)" : "var(--success)" }}>
-                {netWinRate}<span className="metric-unit">%</span>
-              </div>
+      <section className="card report-hero mt-16">
+        <div className="metric-grid" style={{ gridTemplateColumns: "repeat(5, 1fr)" }}>
+          <div className="metric-card">
+            <div className="metric-label">Good</div>
+            <div className="metric-value" style={{ color: "var(--success)" }}>{good}</div>
+          </div>
+          <div className="metric-card">
+            <div className="metric-label">Same</div>
+            <div className="metric-value" style={{ color: "var(--brand-dark)" }}>{same}</div>
+          </div>
+          <div className="metric-card">
+            <div className="metric-label">Bad</div>
+            <div className="metric-value" style={{ color: "var(--warning)" }}>{bad}</div>
+          </div>
+          <div className="metric-card">
+            <div className="metric-label">胜率</div>
+            <div className="metric-value">{summary.win_rate}<span className="metric-unit">%</span></div>
+          </div>
+          <div className="metric-card">
+            <div className="metric-label">净胜率</div>
+            <div className="metric-value" style={{ color: netWinRate < 0 ? "var(--warning)" : "var(--success)" }}>
+              {netWinRate}<span className="metric-unit">%</span>
             </div>
           </div>
-          <p className="card-sub mt-8">净胜率 = (G − B) / (G + S + B)</p>
-        </section>
-
-        <TypicalCaseAnalysis errorCases={content.error_cases} />
-        <Suggestions items={content.suggestions || []} />
-      </>
+        </div>
+        <GsbProportionBar good={good} same={same} bad={bad} />
+        <p className="card-sub mt-8">净胜率 = (G − B) / (G + S + B)</p>
+      </section>
     );
   }
 
-  const dims = content.dimensions || [];
-  const weakest = dims.length ? dims.reduce((a, b) => (b.avg < a.avg ? b : a)) : null;
-  const strongest = dims.length ? dims.reduce((a, b) => (b.avg > a.avg ? b : a)) : null;
-
   return (
-    <>
-      <section className="card report-hero mt-16">
-        <SectionHeading index="一" title="整体结论" />
-        <p className="report-verdict mt-16">
-          最弱维度为「<strong style={{ color: "var(--warning)" }}>{weakest ? weakest.name : "—"}</strong>」，
-          最强维度为「<strong style={{ color: "var(--success)" }}>{strongest ? strongest.name : "—"}</strong>」；
-          问题贯穿需求理解—物料获取—内容整合—结果呈现全链路。
-        </p>
-        <div className="metric-grid mt-16" style={{ gridTemplateColumns: "repeat(4, 1fr)" }}>
-          <div className="metric-card">
-            <div className="metric-label">样本量</div>
-            <div className="metric-value">{summary.total}</div>
-          </div>
-          <div className="metric-card">
-            <div className="metric-label">平均总分</div>
-            <div className="metric-value">{summary.avg_total}</div>
-          </div>
-          <div className="metric-card">
-            <div className="metric-label">低分样本</div>
-            <div className="metric-value" style={{ color: summary.low_count ? "var(--warning)" : undefined }}>
-              {summary.low_count}
-              <span className="metric-unit">（{summary.low_ratio}%）</span>
-            </div>
-          </div>
-          <div className="metric-card">
-            <div className="metric-label">平均置信度</div>
-            <div className="metric-value">{summary.avg_confidence ?? "—"}</div>
+    <section className="card report-hero mt-16">
+      <div className="metric-grid" style={{ gridTemplateColumns: "repeat(4, 1fr)" }}>
+        <div className="metric-card">
+          <div className="metric-label">样本量</div>
+          <div className="metric-value">{summary.total}</div>
+        </div>
+        <div className="metric-card">
+          <div className="metric-label">平均总分</div>
+          <div className="metric-value">{summary.avg_total}</div>
+        </div>
+        <div className="metric-card">
+          <div className="metric-label">低分样本</div>
+          <div className="metric-value" style={{ color: summary.low_count ? "var(--warning)" : undefined }}>
+            {summary.low_count}
+            <span className="metric-unit">（{summary.low_ratio}%）</span>
           </div>
         </div>
-      </section>
-
-      <section className="card mt-16">
-        <SectionHeading index="三" title="分维度问题分析" />
-        <div className="grid-2 mt-16">
-          <div>
-            <p className="card-sub" style={{ margin: "0 0 8px" }}>各维度均值 · 低分占比（总分 &lt; 3.0 记为低分）</p>
-            <div className="dim-list">
-              {dims.map((d) => (
-                <div
-                  className={`dim-row${d.key === weakest?.key ? " dim-row-weakest" : ""}`}
-                  style={{ gridTemplateColumns: "auto 1fr 56px" }}
-                  key={d.key}
-                >
-                  <span className="dim-name inline" style={{ gap: 6 }}>
-                    {d.name}
-                    {d.key === weakest?.key ? (
-                      <Badge tone="warning">最弱</Badge>
-                    ) : d.key === strongest?.key ? (
-                      <Badge tone="success">最强</Badge>
-                    ) : null}
-                    {d.low_count ? <span className="text-tertiary" style={{ fontSize: 11 }}>（低分 {d.low_count} · {d.low_ratio}%）</span> : null}
-                  </span>
-                  <div className="dim-track">
-                    <div className="dim-fill" style={{ width: `${(d.avg / 5) * 100}%` }} />
-                  </div>
-                  <span className="dim-score">{d.avg}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-          <div>
-            <p className="card-sub" style={{ margin: "0 0 8px" }}>总分分布</p>
-            <ScoreDistribution distribution={content.distribution} />
-          </div>
+        <div className="metric-card">
+          <div className="metric-label">平均置信度</div>
+          <div className="metric-value">{summary.avg_confidence ?? "—"}</div>
         </div>
-      </section>
-
-      <TypicalCaseAnalysis errorCases={content.error_cases} />
-      <Suggestions items={content.suggestions || []} />
-    </>
-  );
-}
-
-function Suggestions({ items }) {
-  if (!items.length) return null;
-  return (
-    <section className="card mt-16">
-      <SectionHeading index="五" title="改进建议" sub="对应共性短板与错误归因，可操作、可落地" />
-      <ul className="suggestion-list mt-16">
-        {items.map((s, i) => (
-          <li key={i}>
-            <Icon name="check" size={15} />
-            <span>{s}</span>
-          </li>
-        ))}
-      </ul>
-    </section>
-  );
-}
-
-// 对应 evaluation-report SKILL.md 第四节：4.1 按错误类型聚合计数，4.2 展开 2~3 个典型 case，
-// 每个 case 必须给出原始 Query、问题定位（错误类型 + 核心点评）、原文中的问题点（从 content 原文逐字摘取的片段）。
-function TypicalCaseAnalysis({ errorCases }) {
-  const data = errorCases || { total: 0, type_counts: [], typical: [] };
-  return (
-    <section className="card mt-16">
-      <SectionHeading index="四" title="典型错误 case 分析" sub="低分 / 劣于基线样本的共性归纳与案例佐证" />
-      {!data.total ? (
-        <p className="card-sub mt-16">无低分 / Bad 样本。</p>
-      ) : (
-        <>
-          <p className="card-sub" style={{ margin: "16px 0 8px" }}>4.1 错误归因聚合（共 {data.total} 个）</p>
-          <div className="dim-list">
-            {data.type_counts.map((t) => (
-              <div className="dim-row" style={{ gridTemplateColumns: "90px 1fr 84px" }} key={t.type}>
-                <span className="dim-name">{t.type}</span>
-                <div className="dim-track">
-                  <div className="dim-fill" style={{ width: `${t.ratio}%`, background: "var(--warning)" }} />
-                </div>
-                <span className="text-tertiary" style={{ fontSize: 12, textAlign: "right" }}>
-                  {t.count} 个 · {t.ratio}%
-                </span>
-              </div>
-            ))}
-          </div>
-
-          <p className="card-sub" style={{ margin: "20px 0 8px" }}>4.2 典型错误 case 详评</p>
-          {data.typical.map((c, i) => (
-            <div className="cluster" key={i}>
-              <div className="cluster-head">
-                <span className="cluster-title">{c.query}</span>
-                <Badge tone="warning">{c.error_type}</Badge>
-              </div>
-              {c.content ? (
-                <div className="cluster-example">
-                  <span className="text-tertiary">智搜回答：</span>
-                  <span>{c.content}</span>
-                </div>
-              ) : null}
-              {c.problem_span ? (
-                <div className="case-problem">
-                  <Icon name="warning" size={13} />
-                  <span>原文中的问题点：「{c.problem_span}」</span>
-                </div>
-              ) : null}
-              {c.baseline ? (
-                <div className="cluster-example">
-                  <span className="text-tertiary">竞品表现：</span>
-                  <span>{c.baseline}</span>
-                </div>
-              ) : null}
-              {c.insight ? (
-                <div className="cluster-example" style={{ color: "var(--text-primary)" }}>
-                  <span className="text-tertiary">核心点评：</span>
-                  <span>{c.insight}</span>
-                </div>
-              ) : null}
-            </div>
-          ))}
-        </>
-      )}
+      </div>
     </section>
   );
 }
@@ -1131,6 +1071,7 @@ export function TaskDetailPage({ id, navigate }) {
   const benchmarks = useLoad(() => api.get("/api/benchmarks"), []);
   const datasets = useLoad(() => api.get("/api/datasets"), []);
   const models = useLoad(() => api.get("/api/models"), []);
+  const reportTemplates = useLoad(() => api.get("/api/report-templates"), []);
 
   const [formOpen, setFormOpen] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -1140,13 +1081,15 @@ export function TaskDetailPage({ id, navigate }) {
   const [approvingAll, setApprovingAll] = useState(false);
 
   useEffect(() => {
-    if (!data || data.status !== "RUNNING") return undefined;
+    // 执行中持续轮询；已完成但报告仍在生成时也继续轮询，直到报告就绪
+    const pending = data?.status === "RUNNING" || (data?.status === "COMPLETED" && !data?.report);
+    if (!pending) return undefined;
     const timer = setInterval(() => reload(), 1500);
     return () => clearInterval(timer);
   }, [data, reload]);
 
   if (loading && !data) return <Loading />;
-  if (error) return <ErrorBox message={error} />;
+  if (error && !data) return <ErrorBox message={error} />;
   if (!data) return null;
 
   const task = data;
@@ -1302,7 +1245,7 @@ export function TaskDetailPage({ id, navigate }) {
     <div className="content">
       <button className="back-link" onClick={() => navigate("/tasks")}>
         <Icon name="back" size={16} />
-        返回评估中心
+        返回AI评估中心
       </button>
 
       <div className="page-head">
@@ -1436,8 +1379,10 @@ export function TaskDetailPage({ id, navigate }) {
         benchmarks={benchmarks.data?.items || []}
         datasets={datasets.data?.items || []}
         models={models.data?.items || []}
+        reportTemplates={reportTemplates.data?.items || []}
         onSaved={() => { setFormOpen(false); reload(); }}
         onDatasetsChanged={() => datasets.reload()}
+        onReportTemplatesChanged={() => reportTemplates.reload()}
       />
 
       <ReviewAdjustModal
@@ -1464,7 +1409,7 @@ export function TaskDetailPage({ id, navigate }) {
 /* ---------------- 评估报告（独立页面） ---------------- */
 
 export function TaskReportPage({ id, navigate }) {
-  const { data, loading, error } = useLoad(() => api.get(`/api/tasks/${id}`), [id]);
+  const { data, loading, error, reload } = useLoad(() => api.get(`/api/tasks/${id}`), [id]);
   const [markdown, setMarkdown] = useState("");
   const [mdLoading, setMdLoading] = useState(false);
   const [showSource, setShowSource] = useState(false);
@@ -1472,6 +1417,13 @@ export function TaskReportPage({ id, navigate }) {
   const task = data;
   const report = task?.report;
   const reportReady = task?.status === "COMPLETED" && Boolean(report);
+
+  // 任务已完成但报告还在生成时轮询，报告就绪后自动渲染
+  useEffect(() => {
+    if (!task || reportReady || task.status !== "COMPLETED") return undefined;
+    const timer = setInterval(() => reload(), 2000);
+    return () => clearInterval(timer);
+  }, [task, reportReady, reload]);
 
   useEffect(() => {
     if (!reportReady) return;
@@ -1515,7 +1467,7 @@ export function TaskReportPage({ id, navigate }) {
   }
 
   if (loading && !data) return <Loading />;
-  if (error) return <ErrorBox message={error} />;
+  if (error && !data) return <ErrorBox message={error} />;
   if (!task) return null;
 
   if (!reportReady) {
@@ -1525,7 +1477,10 @@ export function TaskReportPage({ id, navigate }) {
           <Icon name="back" size={16} />
           返回任务详情
         </button>
-        <EmptyState title="报告尚未生成" hint="任务完成评测后会自动生成评估报告" />
+        <EmptyState
+          title={task.status === "COMPLETED" ? "报告生成中…" : "报告尚未生成"}
+          hint={task.status === "COMPLETED" ? "评测已完成，正在生成评估报告，稍候会自动展示" : "任务完成评测后会自动生成评估报告"}
+        />
       </div>
     );
   }
@@ -1581,6 +1536,16 @@ export function TaskReportPage({ id, navigate }) {
       ) : null}
 
       <ReportView report={report} />
+
+      <section className="card mt-16">
+        {mdLoading ? (
+          <Loading />
+        ) : markdown ? (
+          <Markdown source={markdown} />
+        ) : (
+          <EmptyState title="报告正文尚未生成" hint="任务完成时会自动生成报告，稍后刷新重试" />
+        )}
+      </section>
 
       <section className="card" style={{ padding: 0 }}>
         <div className="toolbar" style={{ padding: "16px 20px" }}>
@@ -1966,9 +1931,15 @@ export function DatasetsPage({ navigate }) {
           <div className="page-title">数据集</div>
           <div className="page-desc">数据集管理 · 自助拉数与样本维护</div>
         </div>
-        <Button variant="primary" icon="plus" onClick={() => setShowCreate(true)}>
-          创建数据集
-        </Button>
+        <div style={{ display: "flex", gap: 8 }}>
+          <Button variant="secondary" icon="database" disabled title="待开发">
+            数据源连接
+            <span style={{ fontSize: 11, marginLeft: 4 }}>待开发</span>
+          </Button>
+          <Button variant="primary" icon="plus" onClick={() => setShowCreate(true)}>
+            创建数据集
+          </Button>
+        </div>
       </div>
 
       <section className="card" style={{ padding: 0 }}>
@@ -2946,3 +2917,600 @@ export function BenchmarkDetailPage({ id, navigate }) {
     </div>
   );
 }
+
+/* ---------------- 评估报告模板 ---------------- */
+
+function ReportSectionPicker({ sections, onChange }) {
+  const [custom, setCustom] = useState("");
+  const visible = [...DEFAULT_REPORT_SECTIONS];
+  sections.forEach((s) => {
+    if (!visible.includes(s)) visible.push(s);
+  });
+  const toggle = (s) => onChange(sections.includes(s) ? sections.filter((x) => x !== s) : [...sections, s]);
+  const add = () => {
+    const v = custom.trim();
+    if (v && !visible.includes(v)) onChange([...sections, v]);
+    setCustom("");
+  };
+  return (
+    <>
+      <div className="section-picker">
+        {visible.map((s) => {
+          const on = sections.includes(s);
+          const isCustom = !DEFAULT_REPORT_SECTIONS.includes(s);
+          return (
+            <label key={s} className={`section-chip${on ? " is-on" : ""}`}>
+              <input type="checkbox" checked={on} onChange={() => toggle(s)} />
+              <span>{s}</span>
+              {isCustom ? (
+                <button
+                  type="button"
+                  className="section-chip-x"
+                  title="删除该自定义章节"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    onChange(sections.filter((x) => x !== s));
+                  }}
+                >
+                  ×
+                </button>
+              ) : null}
+            </label>
+          );
+        })}
+      </div>
+      <div className="inline" style={{ gap: 8, marginTop: 8 }}>
+        <input
+          className="input"
+          style={{ flex: 1 }}
+          value={custom}
+          onChange={(e) => setCustom(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              add();
+            }
+          }}
+          placeholder="新增自定义章节，如：竞品对比洞察"
+          maxLength={20}
+        />
+        <Button icon="plus" onClick={add}>
+          新增章节
+        </Button>
+      </div>
+      <span className="field-hint">「GSB 专项评估」仅当任务为 GSB 对比时才会写入报告</span>
+    </>
+  );
+}
+
+export function CreateReportTemplateModal({ open, template, onClose, onSaved }) {
+  const isEdit = Boolean(template);
+  const [step, setStep] = useState(0);
+  const [name, setName] = useState("");
+  const [description, setDescription] = useState("");
+  const [tplType, setTplType] = useState("SKILL");
+  const [promptTemplate, setPromptTemplate] = useState(DEFAULT_REPORT_PROMPT);
+  const [sections, setSections] = useState(DEFAULT_REPORT_SECTIONS);
+  const [skillSource, setSkillSource] = useState("builtin"); // builtin | upload
+  const [builtinSkills, setBuiltinSkills] = useState([]);
+  const [builtinId, setBuiltinId] = useState("evaluation-report");
+  const [skillInfo, setSkillInfo] = useState(null);
+  const [skillUploading, setSkillUploading] = useState(false);
+  const [skillError, setSkillError] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState("");
+
+  useEffect(() => {
+    if (!open) return;
+    setStep(0);
+    setMessage("");
+    setSkillError("");
+    setSkillUploading(false);
+    api.get("/api/skills/builtin").then((r) => setBuiltinSkills(r.items || [])).catch(() => setBuiltinSkills([]));
+    if (template) {
+      const ref = template.config?.skill_ref;
+      setName(template.name);
+      setDescription(template.description || "");
+      setTplType(template.type || "SKILL");
+      setPromptTemplate(template.config?.prompt_template || DEFAULT_REPORT_PROMPT);
+      setSections(template.config?.sections?.length ? template.config.sections : DEFAULT_REPORT_SECTIONS);
+      setSkillSource(ref?.source === "custom" ? "upload" : "builtin");
+      setBuiltinId(ref?.source === "builtin" ? ref.skill_id : "evaluation-report");
+      setSkillInfo(template.config?.skill || null);
+    } else {
+      setName("");
+      setDescription("");
+      setTplType("SKILL");
+      setPromptTemplate(DEFAULT_REPORT_PROMPT);
+      setSections(DEFAULT_REPORT_SECTIONS);
+      setSkillSource("builtin");
+      setBuiltinId("evaluation-report");
+      setSkillInfo(null);
+    }
+  }, [open, template]);
+
+  const builtinById = Object.fromEntries(builtinSkills.map((s) => [s.skill_id, s]));
+
+  useEffect(() => {
+    if (tplType === "SKILL" && skillSource === "builtin" && builtinId) {
+      setSkillInfo(builtinById[builtinId] || null);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tplType, skillSource, builtinId, builtinSkills]);
+
+  async function handleSkillFile(file) {
+    setSkillUploading(true);
+    setSkillError("");
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      const parsed = await api.upload("/api/benchmarks/parse-skill", fd);
+      setSkillInfo(parsed);
+      toast.success("技能包解析成功");
+    } catch (err) {
+      setSkillInfo(null);
+      setSkillError(err.message);
+    } finally {
+      setSkillUploading(false);
+    }
+  }
+
+  function next() {
+    if (!name.trim()) {
+      setMessage("请填写报告模板名称");
+      return;
+    }
+    setMessage("");
+    setStep(1);
+  }
+
+  async function submit() {
+    if (tplType === "SKILL") {
+      if (skillSource === "builtin" && !builtinId) {
+        setMessage("请选择一个内置技能");
+        return;
+      }
+      if (skillSource === "upload" && !skillInfo) {
+        setMessage("请上传并成功解析技能包");
+        return;
+      }
+    } else if (!promptTemplate.trim()) {
+      setMessage("请填写报告提示词");
+      return;
+    }
+    setSaving(true);
+    setMessage("");
+    const payload = {
+      name: name.trim(),
+      description,
+      tpl_type: tplType,
+      prompt_template: tplType === "PROMPT" ? promptTemplate : undefined,
+      sections: tplType === "PROMPT" ? sections : [],
+      skill: tplType === "SKILL" && skillSource === "upload" ? skillInfo : undefined,
+      skill_ref:
+        tplType === "SKILL"
+          ? skillSource === "builtin"
+            ? { source: "builtin", skill_id: builtinId }
+            : { source: "custom", skill_id: skillInfo?.name }
+          : undefined,
+    };
+    try {
+      const saved = isEdit
+        ? await api.put(`/api/report-templates/${template.id}`, payload)
+        : await api.post("/api/report-templates", payload);
+      toast.success(isEdit ? "报告模板已更新" : "报告模板已创建");
+      onSaved(saved);
+    } catch (err) {
+      setMessage(err.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Modal
+      title={isEdit ? "编辑评估报告模板" : "创建评估报告模板"}
+      open={open}
+      onClose={onClose}
+      width={860}
+      footer={
+        <>
+          <Button onClick={onClose}>取消</Button>
+          {step === 1 ? <Button onClick={() => setStep(0)}>上一步</Button> : null}
+          {step === 0 ? (
+            <Button variant="primary" onClick={next}>
+              下一步
+            </Button>
+          ) : (
+            <Button variant="primary" onClick={submit} disabled={saving}>
+              {saving ? "保存中…" : "保存"}
+            </Button>
+          )}
+        </>
+      }
+    >
+      <WizardSteps steps={["基础信息", "报告配置"]} current={step} />
+
+      {step === 0 ? (
+        <>
+          <Field label="模板名称" required>
+            <input className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="如：五段式评估报告" maxLength={50} />
+          </Field>
+          <Field label="模板描述" hint={`非必填，最多 200 字 · ${description.length}/200`}>
+            <textarea className="textarea" value={description} onChange={(e) => setDescription(e.target.value)} placeholder="说明报告风格与适用场景" maxLength={200} />
+          </Field>
+          <Field label="模板类型" required>
+            <div className="option-cards">
+              <div className={`option-card${tplType === "SKILL" ? " selected" : ""}`} onClick={() => setTplType("SKILL")}>
+                <div className="option-card-title">🧩 技能 Skill</div>
+                <div className="option-card-desc">内置 evaluation-report 或上传自定义技能包</div>
+              </div>
+              <div className={`option-card${tplType === "PROMPT" ? " selected" : ""}`} onClick={() => setTplType("PROMPT")}>
+                <div className="option-card-title">✍ 提示词类型</div>
+                <div className="option-card-desc">提示词 + 章节清单，模型据此产出 Markdown</div>
+              </div>
+            </div>
+          </Field>
+        </>
+      ) : tplType === "SKILL" ? (
+        <Field label="技能来源" required hint="内置技能随平台维护；也可上传自定义技能包（Anthropic Agent Skills 规范）">
+          <div className="option-cards">
+            <div className={`option-card${skillSource === "builtin" ? " selected" : ""}`} onClick={() => setSkillSource("builtin")}>
+              <div className="option-card-title">🏷 内置技能</div>
+              <div className="option-card-desc">evaluation-report（评估总报告）</div>
+            </div>
+            <div className={`option-card${skillSource === "upload" ? " selected" : ""}`} onClick={() => { setSkillSource("upload"); setSkillInfo(null); }}>
+              <div className="option-card-title">📤 上传技能包</div>
+              <div className="option-card-desc">.zip（根目录含 SKILL.md）或 SKILL.md</div>
+            </div>
+          </div>
+
+          {skillSource === "builtin" ? (
+            <select className="select mt-8" value={builtinId} onChange={(e) => setBuiltinId(e.target.value)}>
+              <option value="">请选择内置技能</option>
+              {builtinSkills.map((s) => (
+                <option key={s.skill_id} value={s.skill_id}>
+                  {s.skill_id}（v{s.version}）
+                </option>
+              ))}
+            </select>
+          ) : (
+            <Dropzone accept=".zip,.md" onFile={handleSkillFile} hint={skillUploading ? "解析中…" : "支持 .zip 技能包或 SKILL.md，单文件 ≤ 10MB"} />
+          )}
+          {skillError ? (
+            <div className="error-list mt-8">
+              <div className="error-list-item">{skillError}</div>
+            </div>
+          ) : null}
+          {skillInfo ? (
+            <div className="card mt-8" style={{ padding: 14 }}>
+              <div className="detail-meta">
+                <div className="stat-item">
+                  <span className="k">技能名称</span>
+                  <span className="v mono" style={{ fontSize: 14 }}>{skillInfo.name}</span>
+                </div>
+                {skillInfo.version ? (
+                  <div className="stat-item">
+                    <span className="k">版本</span>
+                    <span className="v" style={{ fontSize: 14 }}>{skillInfo.version}</span>
+                  </div>
+                ) : null}
+              </div>
+              <p className="card-sub mt-8">{skillInfo.description}</p>
+              <div className="code-block mt-8" style={{ maxHeight: 220, overflow: "auto" }}>{skillInfo.instructions}</div>
+            </div>
+          ) : null}
+        </Field>
+      ) : (
+        <>
+          <Field label="报告提示词" required hint="变量 {章节} 会被替换为下方勾选的章节清单">
+            <PromptEditor value={promptTemplate} onChange={setPromptTemplate} variables={["{章节}"]} />
+          </Field>
+          <Field label="报告章节">
+            <ReportSectionPicker sections={sections} onChange={setSections} />
+          </Field>
+        </>
+      )}
+
+      {message ? <div style={{ color: "var(--warning)" }}>{message}</div> : null}
+    </Modal>
+  );
+}
+
+export function ReportTemplatesPage({ navigate }) {
+  const { data, loading, error, reload } = useLoad(() => api.get("/api/report-templates"), []);
+  const [search, setSearch] = useState("");
+  const [tplType, setTplType] = useState("");
+  const [page, setPage] = useState(1);
+  const [formOpen, setFormOpen] = useState(false);
+  const [formTemplate, setFormTemplate] = useState(null);
+  const [confirmDelete, setConfirmDelete] = useState(null);
+  const [busy, setBusy] = useState(false);
+
+  const all = data?.items || [];
+  const filtered = useMemo(() => {
+    return all.filter((r) => {
+      const q = search.trim().toLowerCase();
+      if (q && !r.name.toLowerCase().includes(q) && !r.id.toLowerCase().includes(q)) return false;
+      if (tplType && r.type !== tplType) return false;
+      return true;
+    });
+  }, [all, search, tplType]);
+
+  useEffect(() => {
+    setPage(1);
+  }, [search, tplType]);
+
+  const { pageItems, total, totalPages } = paginate(filtered, page);
+
+  async function handleCopy(r) {
+    try {
+      await api.post(`/api/report-templates/${r.id}/copy`);
+      toast.success("已复制");
+      reload();
+    } catch (err) {
+      toast.error(err.message);
+    }
+  }
+  async function handleDelete() {
+    if (!confirmDelete) return;
+    setBusy(true);
+    try {
+      await api.delete(`/api/report-templates/${confirmDelete.id}`);
+      toast.success("已删除");
+      reload();
+    } catch (err) {
+      toast.error(err.message);
+    } finally {
+      setBusy(false);
+      setConfirmDelete(null);
+    }
+  }
+
+  const columns = [
+    {
+      key: "name",
+      title: "模板名称",
+      render: (r) => (
+        <span className="cell-primary" style={{ cursor: "pointer" }} onClick={() => navigate(`/report-templates/${r.id}`)}>
+          {r.name}
+        </span>
+      ),
+    },
+    { key: "type", title: "类型", render: (r) => <Badge tone="outline">{r.type === "SKILL" ? "技能 Skill" : "提示词类型"}</Badge> },
+    {
+      key: "config",
+      title: "内容",
+      render: (r) =>
+        r.type === "SKILL" ? (
+          <span className="cell-secondary mono">{r.config?.skill?.name || "—"}</span>
+        ) : (
+          <span className="cell-secondary">{(r.config?.sections || []).length} 个章节</span>
+        ),
+    },
+    { key: "version", title: "版本", render: (r) => <span className="mono">{r.version}</span> },
+    { key: "use_count", title: "使用次数", render: (r) => <span>{r.use_count}</span> },
+    { key: "updated_at", title: "更新时间", render: (r) => <span className="cell-secondary">{r.updated_at}</span> },
+    { key: "created_by", title: "创建人", render: (r) => <span>{r.created_by}</span> },
+    {
+      key: "actions",
+      title: "操作",
+      width: 170,
+      render: (r) => (
+        <div className="inline" onClick={(e) => e.stopPropagation()}>
+          <IconButton icon="eye" label="查看详情" onClick={() => navigate(`/report-templates/${r.id}`)} />
+          <IconButton icon="edit" label="编辑" onClick={() => { setFormTemplate(r); setFormOpen(true); }} />
+          <IconButton icon="copy" label="复制" onClick={() => handleCopy(r)} />
+          <IconButton
+            icon="trash"
+            label={r.use_count > 0 ? "被任务引用中，无法删除" : "删除"}
+            disabled={r.use_count > 0}
+            onClick={() => setConfirmDelete(r)}
+          />
+        </div>
+      ),
+    },
+  ];
+
+  return (
+    <div className="content">
+      <div className="page-head">
+        <div>
+          <div className="page-title">评估报告模板</div>
+          <div className="page-desc">提示词 / 技能 Skill · 驱动任务完成时的 Markdown 报告生成</div>
+        </div>
+        <Button variant="primary" icon="plus" onClick={() => { setFormTemplate(null); setFormOpen(true); }}>
+          创建报告模板
+        </Button>
+      </div>
+
+      <section className="card" style={{ padding: 0 }}>
+        <div className="toolbar filter-bar" style={{ padding: "16px 20px" }}>
+          <div className="search-input">
+            <Icon name="search" size={16} />
+            <input className="input" placeholder="搜索模板名称 / ID" value={search} onChange={(e) => setSearch(e.target.value)} />
+          </div>
+          <select className="select" style={{ width: 150 }} value={tplType} onChange={(e) => setTplType(e.target.value)}>
+            <option value="">全部类型</option>
+            <option value="PROMPT">提示词类型</option>
+            <option value="SKILL">技能 Skill</option>
+          </select>
+          <span className="spacer" />
+          <span className="text-tertiary" style={{ fontSize: 12 }}>
+            共 {total} 个模板
+          </span>
+        </div>
+        {loading && !data ? <Loading /> : error && !data ? <ErrorBox message={error} /> : <Table columns={columns} data={pageItems} />}
+        <Pagination page={page} totalPages={totalPages} total={total} pageSize={PAGE_SIZE} onChange={setPage} />
+      </section>
+
+      <CreateReportTemplateModal
+        open={formOpen}
+        template={formTemplate}
+        onClose={() => setFormOpen(false)}
+        onSaved={() => { setFormOpen(false); reload(); }}
+      />
+
+      <ConfirmDialog
+        open={Boolean(confirmDelete)}
+        title="删除评估报告模板"
+        message={confirmDelete ? `确定删除「${confirmDelete.name}」吗？此操作不可撤销。` : ""}
+        danger
+        loading={busy}
+        onCancel={() => setConfirmDelete(null)}
+        onConfirm={handleDelete}
+      />
+    </div>
+  );
+}
+
+export function ReportTemplateDetailPage({ id, navigate }) {
+  const { data, loading, error, reload } = useLoad(() => api.get(`/api/report-templates/${id}`), [id]);
+  const [showEdit, setShowEdit] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  if (loading && !data) return <Loading />;
+  if (error && !data) return <ErrorBox message={error} />;
+  if (!data) return null;
+
+  const r = data;
+  const usedBy = r.used_by || [];
+  const skill = r.config?.skill;
+
+  async function handleCopy() {
+    try {
+      const clone = await api.post(`/api/report-templates/${id}/copy`);
+      toast.success("已复制为新模板");
+      navigate(`/report-templates/${clone.id}`);
+    } catch (err) {
+      toast.error(err.message);
+    }
+  }
+  async function handleDelete() {
+    setBusy(true);
+    try {
+      await api.delete(`/api/report-templates/${id}`);
+      toast.success("报告模板已删除");
+      navigate("/report-templates");
+    } catch (err) {
+      toast.error(err.message);
+    } finally {
+      setBusy(false);
+      setConfirmDelete(false);
+    }
+  }
+
+  return (
+    <div className="content">
+      <button className="back-link" onClick={() => navigate("/report-templates")}>
+        <Icon name="back" size={16} />
+        返回评估报告模板
+      </button>
+
+      <div className="page-head">
+        <div>
+          <div className="page-title">{r.name}</div>
+          <div className="page-desc">
+            <span className="mono">{r.id}</span> · {r.type === "SKILL" ? "技能 Skill" : "提示词类型"} · 版本 {r.version} · 使用 {r.use_count} 次
+          </div>
+        </div>
+        <div className="inline">
+          <Button icon="edit" onClick={() => setShowEdit(true)}>编辑</Button>
+          <Button icon="copy" onClick={handleCopy}>复制</Button>
+          <Button
+            icon="trash"
+            disabled={usedBy.length > 0}
+            title={usedBy.length > 0 ? "报告模板正被任务引用，无法删除" : undefined}
+            onClick={() => setConfirmDelete(true)}
+          >
+            删除
+          </Button>
+        </div>
+      </div>
+
+      {r.description ? <p className="card-sub">{r.description}</p> : null}
+
+      {skill ? (
+        <section className="card">
+          <h3 className="card-title">技能 Skill</h3>
+          <div className="detail-meta mt-16">
+            <div className="stat-item">
+              <span className="k">技能名称</span>
+              <span className="v mono" style={{ fontSize: 14 }}>{skill.name}</span>
+            </div>
+            {skill.version ? (
+              <div className="stat-item">
+                <span className="k">版本</span>
+                <span className="v" style={{ fontSize: 14 }}>{skill.version}</span>
+              </div>
+            ) : null}
+            {skill.source_filename ? (
+              <div className="stat-item">
+                <span className="k">来源文件</span>
+                <span className="v" style={{ fontSize: 14 }}>{skill.source_filename}</span>
+              </div>
+            ) : null}
+          </div>
+          <p className="card-sub mt-8">{skill.description}</p>
+          <div className="code-block mt-16">{skill.instructions}</div>
+        </section>
+      ) : (
+        <>
+          <section className="card">
+            <h3 className="card-title">报告章节</h3>
+            <div className="section-picker mt-16">
+              {(r.config?.sections || []).map((s) => (
+                <span className="section-chip is-on" key={s} style={{ cursor: "default" }}>
+                  <span>{s}</span>
+                </span>
+              ))}
+            </div>
+          </section>
+          <section className="card">
+            <h3 className="card-title">报告提示词</h3>
+            <div className="code-block mt-16">{r.config?.prompt_template}</div>
+          </section>
+        </>
+      )}
+
+      <section className="card">
+        <h3 className="card-title">被引用任务</h3>
+        <p className="card-sub">共 {usedBy.length} 个任务引用该模板</p>
+        {usedBy.length === 0 ? (
+          <EmptyState title="暂无任务引用" />
+        ) : (
+          <div className="used-by-list mt-16">
+            {usedBy.map((t) => (
+              <div className="used-by-item" key={t.id}>
+                <span className="cell-primary" style={{ cursor: "pointer" }} onClick={() => navigate(`/tasks/${t.id}`)}>
+                  {t.name}
+                </span>
+                <StatusBadge status={t.status} />
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
+
+      <CreateReportTemplateModal
+        open={showEdit}
+        template={r}
+        onClose={() => setShowEdit(false)}
+        onSaved={() => { setShowEdit(false); reload(); }}
+      />
+
+      <ConfirmDialog
+        open={confirmDelete}
+        title="删除评估报告模板"
+        message={`确定删除「${r.name}」吗？此操作不可撤销。`}
+        danger
+        loading={busy}
+        onCancel={() => setConfirmDelete(false)}
+        onConfirm={handleDelete}
+      />
+    </div>
+  );
+}
+
+/* 人工评估中心的页面在 manual.jsx（ManualEvalPage / ManualAnnotatePage / ManualSummaryPage）。 */

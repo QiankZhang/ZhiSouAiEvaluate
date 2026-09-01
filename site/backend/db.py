@@ -19,7 +19,7 @@ from . import config
 _conn: sqlite3.Connection | None = None
 _write_lock = threading.Lock()
 
-_DEFAULT_ID_SEQ = {"DS": 1000, "BM": 1000, "TK": 1000}
+_DEFAULT_ID_SEQ = {"DS": 1000, "BM": 1000, "TK": 1000, "RT": 1000, "MT": 1000}
 
 
 def _get_conn() -> sqlite3.Connection:
@@ -41,18 +41,35 @@ def load_state() -> dict[str, Any]:
         "tasks": json.loads(rows["tasks"]) if "tasks" in rows else [],
         "benchmarks": json.loads(rows["benchmarks"]) if "benchmarks" in rows else [],
         "datasets": json.loads(rows["datasets"]) if "datasets" in rows else [],
+        "report_templates": json.loads(rows["report_templates"]) if "report_templates" in rows else [],
         "id_seq": json.loads(rows["id_seq"]) if "id_seq" in rows else dict(_DEFAULT_ID_SEQ),
+        "accounts": json.loads(rows["accounts"]) if "accounts" in rows else [],
+        "sessions": json.loads(rows["sessions"]) if "sessions" in rows else {},
+        "manual_tasks": json.loads(rows["manual_tasks"]) if "manual_tasks" in rows else [],
     }
 
 
-def save_state(tasks: list, benchmarks: list, datasets: list, id_seq: dict) -> None:
+def save_state(
+    tasks: list,
+    benchmarks: list,
+    datasets: list,
+    id_seq: dict,
+    report_templates: list | None = None,
+    accounts: list | None = None,
+    sessions: dict | None = None,
+    manual_tasks: list | None = None,
+) -> None:
     """整份快照落盘。调用方需保证传入时这几个列表/字典不会被其它线程并发修改
     （main.py 里在持有应用级 _lock 的情况下调用，序列化期间数据是稳定的）。"""
     payload = {
         "tasks": json.dumps(tasks, ensure_ascii=False),
         "benchmarks": json.dumps(benchmarks, ensure_ascii=False),
         "datasets": json.dumps(datasets, ensure_ascii=False),
+        "report_templates": json.dumps(report_templates or [], ensure_ascii=False),
         "id_seq": json.dumps(id_seq),
+        "accounts": json.dumps(accounts or [], ensure_ascii=False),
+        "sessions": json.dumps(sessions or {}),
+        "manual_tasks": json.dumps(manual_tasks or [], ensure_ascii=False),
     }
     conn = _get_conn()
     with _write_lock:

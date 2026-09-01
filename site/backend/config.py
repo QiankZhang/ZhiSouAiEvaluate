@@ -33,6 +33,15 @@ def _get(name: str, default: str) -> str:
     return os.environ.get(name, default).strip()
 
 
+def _get_any(names: list[str], default: str) -> str:
+    """按优先级读取多个环境变量名，取第一个非空值（兼容历史 DEEPSEEK_* 命名）。"""
+    for name in names:
+        value = os.environ.get(name, "").strip()
+        if value:
+            return value
+    return default
+
+
 def _get_float(name: str, default: float) -> float:
     try:
         return float(os.environ.get(name, "").strip() or default)
@@ -47,15 +56,26 @@ def _get_int(name: str, default: int) -> int:
         return default
 
 
-# ---- DeepSeek / 模型网关（OpenAI 兼容协议）----
-DEEPSEEK_API_KEY = _get("DEEPSEEK_API_KEY", "")
-DEEPSEEK_BASE_URL = _get("DEEPSEEK_BASE_URL", "https://api.deepseek.com").rstrip("/")
-DEEPSEEK_MODEL = _get("DEEPSEEK_MODEL", "deepseek-v4-flash")
+# ---- 模型网关（效果评估平台大模型接口，OpenAI Chat Completions 兼容，见 API.md）----
+# 网关自身按 API Key（可选，内网部署可留空）鉴权，并做日调用次数 / 日预算 / QPS 限流。
+LLM_BASE_URL = _get_any(["LLM_BASE_URL", "DEEPSEEK_BASE_URL"], "http://10.37.254.124:8010/v1").rstrip("/")
+LLM_API_KEY = _get_any(["LLM_API_KEY", "DEEPSEEK_API_KEY"], "")
+LLM_MODEL = _get_any(["LLM_MODEL", "DEEPSEEK_MODEL"], "deepseek-v4-flash")
 LLM_TIMEOUT_SEC = _get_int("LLM_TIMEOUT_SEC", 45)
 LLM_MAX_RETRIES = _get_int("LLM_MAX_RETRIES", 3)
+# 网关侧日调用次数上限（API.md「额度」：默认 1000 次/天）。仅用于前端额度提示与本地兜底计数，
+# 真正的限流以网关 /v1/quota 与 429 响应为准。
+LLM_DAILY_CALL_LIMIT = _get_int("LLM_DAILY_CALL_LIMIT", 1000)
 
-# 真实调用会命中的裁判员模型（其余模型标识只做展示 / 走模拟引擎）
-LIVE_MODELS = {"deepseek-v4-flash", "deepseek-v4-pro", "deepseek-chat", "deepseek-reasoner"}
+# 网关提供的可用模型（API.md「可用模型」）。命中这些标识即走真实调用，其余走确定性模拟引擎。
+LIVE_MODELS = {
+    "qwen3.5-plus-online",
+    "qwen3.5-plus",
+    "qwen3.5-plus-offline",
+    "deepseek-v4-flash",
+    "deepseek-v4-flash-online",
+    "Qwen3-235B-A22B-Instruct-2507",
+}
 
 # ---- 评测引擎 ----
 # auto: 配了 Key 且裁判员模型在 LIVE_MODELS 时走真实调用，否则模拟；失败率过高自动降级
@@ -77,8 +97,9 @@ DB_PATH = Path(_get("DB_PATH", str(_BACKEND_DIR / "data" / "app.db")))
 
 
 def engine_for(model: str) -> str:
-    """返回该裁判员模型实际应使用的引擎：'agent' 或 'simulated'。"""
-    live = bool(DEEPSEEK_API_KEY) and model in LIVE_MODELS
+    """返回该裁判员模型实际应使用的引擎：'agent' 或 'simulated'。
+    网关无需 API Key 即可调用，因此只按模型标识是否在网关可用列表内判断。"""
+    live = model in LIVE_MODELS
     if JUDGE_ENGINE == "simulated":
         return "simulated"
     if JUDGE_ENGINE == "agent":
