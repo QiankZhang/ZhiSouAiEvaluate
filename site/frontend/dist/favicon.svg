@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <linearGradient id="zs-fav" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ff8200" />
+      <stop offset="1" stop-color="#ffbc33" />
+    </linearGradient>
+  </defs>
+  <rect width="32" height="32" rx="7" fill="url(#zs-fav)" />
+  <g transform="translate(4 4)" fill="none" stroke="#fff" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M3 3v18h18M7 16v3M12 11v8M17 6v13" />
+  </g>
+</svg>
