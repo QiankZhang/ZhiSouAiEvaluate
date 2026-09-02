@@ -19,7 +19,7 @@ NAME="${NAME:-zhisou}"
 HOST_PORT="${HOST_PORT:-8080}"
 ENV_FILE="$APP_DIR/zhisou.env"
 # 目标机拉不到 Docker Hub 时用镜像源做基础镜像（daocloud 实测可用）
-BASE_IMAGE="${BASE_IMAGE:-docker.m.daocloud.io/library/python:3.11-slim}"
+BASE_IMAGE="${BASE_IMAGE:-docker.m.daocloud.io/library/python:3.11-slim-bullseye}"
 PIP_INDEX_URL="${PIP_INDEX_URL:-}"
 
 die() { echo "错误: $*" >&2; exit 1; }

@@ -76,4 +76,9 @@ bash /data1/zhisou/app/site/deploy/docker-run.sh
 - **数据文件属主**：容器内以 root 写盘，宿主机 `data/` 下的 `app.db*` 属主是 root；`search` 用户备份用 `tar`（能读）没问题，直接 `cp` 可能需要 `sudo`。
 - **网关连通性**：容器走默认 bridge 网络即可访问内网 `10.37.254.124:8010`。若不通，`zhisou.env` 改 `JUDGE_ENGINE=simulated` 先上线（只有模拟打分）。
 - **对外访问**：容器只在目标机本地开 `8080`。从办公网访问需要公司内网路由 / SLB / 域名映射到 `10.2.1.44:8080`，这一步走公司 OPS 流程，不在本脚本范围。
-- **基础镜像**：`python:3.11-slim` 来自 Docker Hub。目标机 Docker 拉不到 Docker Hub 时，改用公司内网 registry 的等价镜像，或配置 registry mirror。
+- **基础镜像**：`docker-run.sh` 默认 `docker.m.daocloud.io/library/python:3.11-slim-bullseye`。
+  - Docker Hub 在公司网络不可达，daocloud 镜像源实测可用；换源用 `BASE_IMAGE=... bash docker-run.sh`。
+  - **必须 bullseye**（Debian 11）：CentOS 7 自带的老 Docker（19.03 era）seccomp 白名单不含 `clone3`，
+    Debian 12（bookworm，glibc 2.36）基础镜像在容器内起线程会报 `RuntimeError: can't start new thread`。
+    bullseye 是 glibc 2.31，用老的 `clone()`，没这问题。
+  - 另一条路（不换基础镜像）：给 build 和 run 都加 `--security-opt seccomp=unconfined`，但会削弱容器隔离。
