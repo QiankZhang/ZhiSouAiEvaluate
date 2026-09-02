@@ -3,7 +3,14 @@
 #   docker build -t zhisou:latest -f site/deploy/Dockerfile .
 # 说明：config.py 按 backend/../.. 定位仓库根，因此镜像内代码放在 /app 下，
 #       保持 /app/site 与 /app/skills 同级。
-FROM python:3.11-slim
+#
+# 基础镜像可配置：目标机拉不到 Docker Hub 时用镜像源，例如
+#   docker build --build-arg BASE_IMAGE=docker.m.daocloud.io/library/python:3.11-slim ...
+ARG BASE_IMAGE=python:3.11-slim
+FROM ${BASE_IMAGE}
+
+# pip 源可配置（内网环境按需传 --build-arg PIP_INDEX_URL=...）
+ARG PIP_INDEX_URL=""
 
 ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
@@ -13,7 +20,7 @@ WORKDIR /app
 
 # 先装依赖，利用镜像层缓存（requirements 不变则跳过重装）
 COPY site/requirements.txt /app/site/requirements.txt
-RUN pip install -r /app/site/requirements.txt
+RUN pip install ${PIP_INDEX_URL:+--index-url $PIP_INDEX_URL} -r /app/site/requirements.txt
 
 # 应用代码 + 内置技能 + 已构建前端（site/frontend/dist 由 deploy 分支带入）
 COPY site /app/site
