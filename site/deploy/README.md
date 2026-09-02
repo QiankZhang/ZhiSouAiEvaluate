@@ -1,6 +1,10 @@
 # 智搜效果评估平台 · 部署与运维手册
 
 > 给接手部署的开发同学。这套脚本让首次部署和日常更新各自一条命令搞定。
+>
+> **选哪种方式：**
+> - 目标机能装 Python ≥ 3.10、有 root/sudo、能装 nginx → 用下面的 `install.sh`（方式 A/B）。
+> - 目标机没有 root、没有 Python、只有 Docker（公司 CentOS 7 通道机就是这种）→ 见 **[DOCKER.md](DOCKER.md)**，`git clone` + `docker-run.sh` 一条命令。
 
 ## 一、这是个什么系统
 
