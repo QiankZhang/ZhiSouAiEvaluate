@@ -4,9 +4,11 @@
 # 说明：config.py 按 backend/../.. 定位仓库根，因此镜像内代码放在 /app 下，
 #       保持 /app/site 与 /app/skills 同级。
 #
-# 基础镜像可配置：目标机拉不到 Docker Hub 时用镜像源，例如
-#   docker build --build-arg BASE_IMAGE=docker.m.daocloud.io/library/python:3.11-slim ...
-ARG BASE_IMAGE=python:3.11-slim
+# 基础镜像可配置：
+#  - 目标机拉不到 Docker Hub 时用镜像源（docker-run.sh 默认 docker.m.daocloud.io）
+#  - 必须用 bullseye(Debian 11/glibc 2.31)：CentOS 7 的老 Docker seccomp 不放行
+#    bookworm(glibc 2.36) 的 clone3，容器内起线程会 "can't start new thread"
+ARG BASE_IMAGE=python:3.11-slim-bullseye
 FROM ${BASE_IMAGE}
 
 # pip 源可配置（内网环境按需传 --build-arg PIP_INDEX_URL=...）
