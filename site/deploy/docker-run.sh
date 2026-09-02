@@ -18,6 +18,9 @@ IMAGE="${IMAGE:-zhisou:latest}"
 NAME="${NAME:-zhisou}"
 HOST_PORT="${HOST_PORT:-8080}"
 ENV_FILE="$APP_DIR/zhisou.env"
+# 目标机拉不到 Docker Hub 时用镜像源做基础镜像（daocloud 实测可用）
+BASE_IMAGE="${BASE_IMAGE:-docker.m.daocloud.io/library/python:3.11-slim}"
+PIP_INDEX_URL="${PIP_INDEX_URL:-}"
 
 die() { echo "错误: $*" >&2; exit 1; }
 
@@ -28,8 +31,11 @@ command -v docker >/dev/null || die "没有 docker 命令"
 mkdir -p "$APP_DIR/data" "$APP_DIR/reports"
 
 echo "==> git 版本: $(git -C "$SRC" rev-parse --short HEAD 2>/dev/null || echo '未知')"
-echo "==> docker build $IMAGE"
-docker build -t "$IMAGE" -f "$SRC/site/deploy/Dockerfile" "$SRC"
+echo "==> docker build $IMAGE (base: $BASE_IMAGE)"
+docker build -t "$IMAGE" -f "$SRC/site/deploy/Dockerfile" \
+  --build-arg "BASE_IMAGE=$BASE_IMAGE" \
+  ${PIP_INDEX_URL:+--build-arg "PIP_INDEX_URL=$PIP_INDEX_URL"} \
+  "$SRC"
 
 echo "==> 重启容器 $NAME (端口 $HOST_PORT -> 8000)"
 docker rm -f "$NAME" 2>/dev/null || true
