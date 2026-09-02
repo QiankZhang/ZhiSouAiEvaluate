@@ -1,0 +1,34 @@
+# Docker 构建上下文过滤（构建上下文为仓库根）。
+# 注意：不要忽略 site/frontend/dist —— 单容器镜像要靠它托管前端。
+.git
+.gitignore
+.DS_Store
+**/.DS_Store
+.claude
+.codebuddy
+
+# 根级文档与设计稿，运行时用不到
+/*.md
+
+# Python / Node 中间产物
+**/__pycache__
+**/*.pyc
+**/*.pyo
+.venv
+venv
+**/node_modules
+.pytest_cache
+.ruff_cache
+
+# 部署产物 / 离线依赖 / 发布包
+/dist
+site/deploy/vendor
+
+# 运行时数据与密钥（绝不进镜像；数据走 volume 挂载）
+site/backend/.env
+site/backend/.env.*
+site/backend/data
+site/backend/reports
+**/*.db
+**/*.db-wal
+**/*.db-shm

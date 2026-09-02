@@ -1804,3 +1804,29 @@ _manual.init(
     report_templates=_report_templates,
 )
 app.include_router(_manual.router)
+
+
+# ---- 前端静态资源托管（单容器 / 无 nginx 部署时启用）----
+# nginx 方案下前端由 nginx 托管、本段不生效（dist 不在后端可见路径也无妨）；
+# 当构建产物随后端一起部署（Docker 单容器）时，由 FastAPI 直接对外提供前端。
+# 放在所有 API 路由与 include_router 之后注册，确保 /api 与 /health 优先匹配。
+from fastapi.responses import FileResponse  # noqa: E402
+from fastapi.staticfiles import StaticFiles  # noqa: E402
+
+_DIST_DIR = config._REPO_ROOT / "site" / "frontend" / "dist"
+if (_DIST_DIR / "index.html").is_file():
+    app.mount("/assets", StaticFiles(directory=str(_DIST_DIR / "assets")), name="assets")
+
+    @app.get("/", include_in_schema=False)
+    def _spa_index() -> FileResponse:
+        return FileResponse(_DIST_DIR / "index.html")
+
+    @app.get("/{spa_path:path}", include_in_schema=False)
+    def _spa_fallback(spa_path: str) -> Response:
+        # 未知的 /api、/health 路径仍返回 404，不吞成前端首页
+        if spa_path.startswith(("api/", "health")):
+            raise HTTPException(status_code=404, detail="Not Found")
+        target = _DIST_DIR / spa_path
+        if target.is_file():
+            return FileResponse(target)
+        return FileResponse(_DIST_DIR / "index.html")  # SPA 前端路由回退
