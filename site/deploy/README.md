@@ -4,7 +4,10 @@
 >
 > **选哪种方式：**
 > - 目标机能装 Python ≥ 3.10、有 root/sudo、能装 nginx → 用下面的 `install.sh`（方式 A/B）。
-> - 目标机没有 root、没有 Python、只有 Docker（公司 CentOS 7 通道机就是这种）→ 见 **[DOCKER.md](DOCKER.md)**，`git clone` + `docker-run.sh` 一条命令。
+> - 目标机没有 root、没有 Python、只有 Docker（公司 CentOS 7 通道机 `10.2.1.44` 就是这种）→
+>   看 **[DOCKER.md](DOCKER.md)**（首次部署）和 **[UPDATE.md](UPDATE.md)**（日常更新速查）。
+>   已上线：容器 `zhisou` 跑在 `10.2.1.44:8080`。日常更新一条命令：
+>   开发机 `bash site/deploy/publish-deploy.sh` → 目标机 `bash /data1/zhisou/app/site/deploy/remote-update.sh`。
 
 ## 一、这是个什么系统
 
