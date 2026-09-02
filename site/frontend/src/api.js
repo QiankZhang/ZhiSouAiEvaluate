@@ -78,6 +78,7 @@ export const ANNOTATE_TYPE_LABELS = {
   GSB: "GSB 标注",
   MULTI_DIM: "多维度评估标注",
   CONVERSATION: "多轮对话标注",
+  INTENT: "意图准确率标注",
 };
 
 export const MANUAL_STATUS_LABELS = {

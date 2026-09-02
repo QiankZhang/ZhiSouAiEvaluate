@@ -200,6 +200,85 @@ def test_export_csv_multi():
     assert "维度甲" in body and "total" in body
 
 
+def _upload_intent(text, filename="i.csv", labels="", name="意图任务"):
+    return asyncio.run(
+        manual.upload_manual_task(
+            name=name, description="", annotate_type="INTENT",
+            dimensions="[]", gsb_swap_sides="false", intent_labels=labels,
+            report_template_id="", report_model="gpt-4.1", file=_File(text, filename),
+        )
+    )
+
+
+def test_intent_upload_and_accuracy_summary():
+    mt = _upload_intent(
+        "query,predicted_intent,expected_intent\n"
+        "q1,天气查询,天气查询\nq2,物流查询,售后咨询\nq3,闲聊,闲聊\nq4,天气查询,股票查询\n"
+    )
+    assert mt["annotate_type"] == "INTENT"
+    assert mt["progress_total"] == 4
+    mid = mt["id"]
+
+    manual.annotate(mid, manual.AnnotateBody(unit_key="1", judgment="correct"))
+    manual.annotate(mid, manual.AnnotateBody(unit_key="2", judgment="wrong", corrected_intent="售后咨询"))
+    manual.annotate(mid, manual.AnnotateBody(unit_key="3", judgment="correct"))
+    out = manual.annotate(mid, manual.AnnotateBody(unit_key="4", judgment="partial", corrected_intent="股票查询"))
+
+    assert out["status"] == "COMPLETED"
+    s = out["summary"]
+    assert (s["correct"], s["partial"], s["wrong"]) == (2, 1, 1)
+    assert s["accuracy"] == pytest.approx(50.0)
+    assert s["lenient_accuracy"] == pytest.approx(62.5)
+    weather = next(i for i in s["intents"] if i["intent"] == "天气查询")
+    assert (weather["total"], weather["correct"]) == (2, 1)
+    assert {(c["predicted"], c["corrected"]) for c in s["confusions"]} == {
+        ("物流查询", "售后咨询"),
+        ("天气查询", "股票查询"),
+    }
+
+
+def test_intent_correct_clears_corrected_intent():
+    mt = _upload_intent("query,predicted_intent\nq1,天气查询\n")
+    mid = mt["id"]
+    manual.annotate(mid, manual.AnnotateBody(unit_key="1", judgment="wrong", corrected_intent="股票查询"))
+    out = manual.annotate(mid, manual.AnnotateBody(unit_key="1", judgment="correct"))
+    assert out["units"][0]["corrected_intent"] == ""
+
+
+def test_intent_missing_required_column_rejected():
+    with pytest.raises(HTTPException) as ei:
+        _upload_intent("query,foo\nq1,bar\n")
+    assert ei.value.status_code == 422
+
+
+def test_intent_labels_parsed_from_freeform():
+    mt = _upload_intent("query,predicted_intent\nq1,天气查询\n", labels="天气查询，物流查询\n售后咨询")
+    assert mt["intent_labels"] == ["天气查询", "物流查询", "售后咨询"]
+
+
+def test_intent_report_deterministic():
+    mt = _upload_intent("query,predicted_intent\nq1,天气查询\nq2,物流查询\n")
+    mid = mt["id"]
+    manual.annotate(mid, manual.AnnotateBody(unit_key="1", judgment="correct"))
+    manual.annotate(mid, manual.AnnotateBody(unit_key="2", judgment="wrong", corrected_intent="售后咨询", note="应识别为售后"))
+    manual.trigger_report(mid)
+    for _ in range(60):
+        if manual.get_report(mid).get("status") in ("READY", "FAILED"):
+            break
+        time.sleep(0.05)
+    rp = manual.get_report(mid)
+    assert rp["status"] == "READY"
+    assert "意图准确率" in rp["markdown"]
+
+
+def test_intent_export_columns():
+    mt = _upload_intent("query,predicted_intent,expected_intent\nq1,天气查询,天气查询\n")
+    mid = mt["id"]
+    manual.annotate(mid, manual.AnnotateBody(unit_key="1", judgment="correct"))
+    body = manual.export_manual_task(mid).body.decode("utf-8")
+    assert "predicted_intent" in body and "corrected_intent" in body and "识别正确" in body
+
+
 def test_duplicate_name_rejected():
     _upload("GSB", "query,content,baseline\nq1,c1,b1\n", name="重名")
     with pytest.raises(HTTPException) as ei:

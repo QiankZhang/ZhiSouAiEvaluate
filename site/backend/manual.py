@@ -29,8 +29,23 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/manual-tasks", tags=["manual"])
 
-ANNOTATE_TYPES = {"GSB", "MULTI_DIM", "CONVERSATION"}
-ANNOTATE_TYPE_LABELS = {"GSB": "GSB 标注", "MULTI_DIM": "多维度评估标注", "CONVERSATION": "多轮对话标注"}
+ANNOTATE_TYPES = {"GSB", "MULTI_DIM", "CONVERSATION", "INTENT"}
+ANNOTATE_TYPE_LABELS = {
+    "GSB": "GSB 标注",
+    "MULTI_DIM": "多维度评估标注",
+    "CONVERSATION": "多轮对话标注",
+    "INTENT": "意图准确率标注",
+}
+INTENT_JUDGMENTS = ("correct", "partial", "wrong")
+INTENT_JUDGMENT_LABELS = {"correct": "识别正确", "partial": "部分正确", "wrong": "识别错误"}
+
+# 意图准确率上传列名与别名（大小写不敏感，取第一个命中的列）
+_INTENT_COL_ALIASES = {
+    "query": ("query", "问题", "用户输入", "输入", "q", "question", "用户query"),
+    "predicted_intent": ("predicted_intent", "predicted", "predict_intent", "intent", "识别意图", "预测意图", "系统意图", "意图"),
+    "expected_intent": ("expected_intent", "expected", "gold", "gold_intent", "期望意图", "标准意图", "正确意图", "真实意图"),
+    "scene": ("scene", "场景", "渠道", "channel", "来源"),
+}
 
 MAX_ROWS = 500          # GSB / 多维度：样本条数上限
 MAX_SESSIONS = 200      # 多轮对话：会话数上限
@@ -214,7 +229,110 @@ def _parse_conversation(raw: bytes, filename: str) -> tuple[list[dict[str, Any]]
     return sessions, errors
 
 
+def _parse_intent(raw: bytes, filename: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """解析意图准确率上传：返回 (rows, errors)。支持 .csv / .json / .jsonl。
+    必填列 query、predicted_intent；可选 expected_intent（金标准）、scene（场景备注）。"""
+    lower = filename.lower()
+    errors: list[dict[str, Any]] = []
+    try:
+        text = raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        return [], [{"line": 0, "message": "文件编码不支持，请使用 UTF-8 编码的文件"}]
+
+    records: list[tuple[int, dict[str, Any]]] = []
+    if lower.endswith(".jsonl"):
+        for i, line in enumerate(text.splitlines(), start=1):
+            if not line.strip():
+                continue
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError as exc:
+                errors.append({"line": i, "message": f"JSON 解析失败：{exc.msg}"})
+                continue
+            if isinstance(obj, dict):
+                records.append((i, obj))
+            else:
+                errors.append({"line": i, "message": "每行必须是 JSON 对象"})
+    elif lower.endswith(".json"):
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError as exc:
+            return [], [{"line": exc.lineno, "message": f"JSON 解析失败：{exc.msg}"}]
+        if not isinstance(payload, list):
+            return [], [{"line": 1, "message": "JSON 根节点必须是数组"}]
+        for i, obj in enumerate(payload, start=1):
+            if isinstance(obj, dict):
+                records.append((i, obj))
+            else:
+                errors.append({"line": i, "message": "元素必须是对象"})
+    elif lower.endswith(".csv"):
+        reader = csv.DictReader(io.StringIO(text))
+        if not reader.fieldnames:
+            return [], [{"line": 1, "message": "未识别到表头，请使用模板中的列名"}]
+        fields = {f.strip().lower(): f for f in reader.fieldnames}
+        colmap: dict[str, str] = {}
+        for canon, aliases in _INTENT_COL_ALIASES.items():
+            src = next((fields[a] for a in aliases if a in fields), None)
+            if src:
+                colmap[canon] = src
+        if "query" not in colmap or "predicted_intent" not in colmap:
+            return [], [{"line": 1, "message": "意图准确率 CSV 需包含列：query、predicted_intent"}]
+        for i, row in enumerate(reader, start=2):
+            records.append((i, {c: row.get(src, "") for c, src in colmap.items()}))
+    else:
+        return [], [{"line": 0, "message": "意图准确率标注仅支持 CSV / JSON / JSONL 格式"}]
+
+    def _pick(obj: dict[str, Any], canon: str) -> str:
+        for k in (canon, *_INTENT_COL_ALIASES[canon]):
+            if k in obj and str(obj[k]).strip():
+                return str(obj[k]).strip()
+        return ""
+
+    rows: list[dict[str, Any]] = []
+    for line, obj in records:
+        q = _pick(obj, "query")
+        pi = _pick(obj, "predicted_intent")
+        if not q or not pi:
+            errors.append({"line": line, "message": "缺少必填字段：query / predicted_intent"})
+            continue
+        rows.append(
+            {
+                "query": q,
+                "predicted_intent": pi,
+                "expected_intent": _pick(obj, "expected_intent"),
+                "scene": _pick(obj, "scene"),
+            }
+        )
+    if not rows and not errors:
+        errors.append({"line": 0, "message": "文件中没有可用数据行"})
+    return rows, errors
+
+
 def _build_units(annotate_type: str, raw: bytes, filename: str) -> list[dict[str, Any]]:
+    if annotate_type == "INTENT":
+        rows, errors = _parse_intent(raw, filename)
+        if errors:
+            raise HTTPException(status_code=422, detail={"message": "文件校验未通过，请修正后重新上传", "errors": errors[:50]})
+        if len(rows) > MAX_ROWS:
+            raise HTTPException(status_code=422, detail={"message": f"样本条数超过上限（{MAX_ROWS} 条）", "errors": []})
+        return [
+            {
+                "key": str(i),
+                "index": i,
+                "query": r["query"],
+                "predicted_intent": r["predicted_intent"],
+                "expected_intent": r["expected_intent"],
+                "scene": r["scene"],
+                "judgment": None,
+                "corrected_intent": "",
+                "skipped": False,
+                "note": "",
+                "annotated_by": None,
+                "annotated_at": None,
+            }
+            for i, r in enumerate(rows, start=1)
+        ]
+
     if annotate_type == "CONVERSATION":
         sessions, errors = _parse_conversation(raw, filename)
         if errors:
@@ -288,6 +406,8 @@ def _unit_done(unit: dict[str, Any], mt: dict[str, Any]) -> bool:
         return True
     if mt["annotate_type"] == "GSB":
         return unit.get("judgment") in ("G", "S", "B")
+    if mt["annotate_type"] == "INTENT":
+        return unit.get("judgment") in INTENT_JUDGMENTS
     return unit.get("total") is not None
 
 
@@ -312,6 +432,58 @@ def _compute_summary(mt: dict[str, Any]) -> dict[str, Any]:
             "bad": bad,
             "win_rate": round(good / denom * 100, 1) if denom else 0.0,
             "net_win_rate": round((good - bad) / denom * 100, 1) if denom else 0.0,
+        }
+
+    if mt["annotate_type"] == "INTENT":
+        graded = [u for u in units if not u.get("skipped") and u.get("judgment") in INTENT_JUDGMENTS]
+        correct = sum(1 for u in graded if u["judgment"] == "correct")
+        partial = sum(1 for u in graded if u["judgment"] == "partial")
+        wrong = sum(1 for u in graded if u["judgment"] == "wrong")
+        n = correct + partial + wrong
+
+        agg: dict[str, dict[str, Any]] = {}
+        for u in graded:
+            key = u.get("predicted_intent") or "（空）"
+            a = agg.setdefault(key, {"intent": key, "total": 0, "correct": 0, "wrong": 0})
+            a["total"] += 1
+            if u["judgment"] == "correct":
+                a["correct"] += 1
+            elif u["judgment"] == "wrong":
+                a["wrong"] += 1
+        intents = []
+        for a in agg.values():
+            a["accuracy"] = round(a["correct"] / a["total"] * 100, 1) if a["total"] else 0.0
+            intents.append(a)
+        intents.sort(key=lambda x: (-x["total"], x["accuracy"]))
+
+        conf: dict[tuple[str, str], int] = {}
+        for u in graded:
+            if u["judgment"] in ("wrong", "partial"):
+                pair = (
+                    u.get("predicted_intent") or "—",
+                    u.get("corrected_intent") or u.get("expected_intent") or "—",
+                )
+                conf[pair] = conf.get(pair, 0) + 1
+        confusions = [
+            {"predicted": p, "corrected": c, "count": k}
+            for (p, c), k in sorted(conf.items(), key=lambda x: -x[1])[:8]
+        ]
+        weakest = min(intents, key=lambda x: x["accuracy"]) if intents else None
+        strongest = max(intents, key=lambda x: x["accuracy"]) if intents else None
+        return {
+            "eval_method": "INTENT",
+            "total": total,
+            "scored": n,
+            "skipped": skipped,
+            "correct": correct,
+            "partial": partial,
+            "wrong": wrong,
+            "accuracy": round(correct / n * 100, 1) if n else 0.0,
+            "lenient_accuracy": round((correct + 0.5 * partial) / n * 100, 1) if n else 0.0,
+            "intents": intents,
+            "confusions": confusions,
+            "weakest_intent": weakest["intent"] if weakest else None,
+            "strongest_intent": strongest["intent"] if strongest else None,
         }
 
     dims = mt.get("dimensions") or []
@@ -377,9 +549,10 @@ class ManualTaskPatch(BaseModel):
 
 class AnnotateBody(BaseModel):
     unit_key: str
-    judgment: Optional[str] = None            # GSB: G / S / B
+    judgment: Optional[str] = None            # GSB: G / S / B；INTENT: correct / partial / wrong
     dim_scores: Optional[dict[str, int]] = None
     overridden_total: Optional[float] = None  # 传 -1 表示清除覆盖
+    corrected_intent: Optional[str] = None    # INTENT: 判错 / 部分正确时填写的正确意图
     skipped: Optional[bool] = None
     note: Optional[str] = None
 
@@ -408,6 +581,13 @@ def manual_template(annotate_type: str = "MULTI_DIM") -> Response:
     elif annotate_type == "GSB":
         content = "query,content,baseline\n示例：某地天气预报,示例：待评策略的输出,示例：基线策略的输出\n"
         name = "GSB标注模板.csv"
+    elif annotate_type == "INTENT":
+        content = (
+            "query,predicted_intent,expected_intent,scene\n"
+            "示例：帮我查下明天上海的天气,天气查询,天气查询,APP首页\n"
+            "示例：这个订单怎么还没发货,物流查询,售后咨询,客服会话\n"
+        )
+        name = "意图准确率标注模板.csv"
     else:
         content = "query,content\n示例：某产品最新报价,示例：待评策略的输出\n"
         name = "多维度标注模板.csv"
@@ -425,6 +605,7 @@ async def upload_manual_task(
     annotate_type: str = Form(...),
     dimensions: str = Form("[]"),
     gsb_swap_sides: str = Form("false"),
+    intent_labels: str = Form(""),
     report_template_id: str = Form(""),
     report_model: str = Form(""),
     file: UploadFile = File(...),
@@ -453,6 +634,22 @@ async def upload_manual_task(
         if sum(d["weight"] for d in dims) != 100:
             raise HTTPException(status_code=400, detail="维度权重合计需为 100%")
 
+    labels: list[str] = []
+    if annotate_type == "INTENT" and intent_labels.strip():
+        try:
+            parsed_labels = json.loads(intent_labels)
+            raw_labels = parsed_labels if isinstance(parsed_labels, list) else []
+        except json.JSONDecodeError:
+            raw_labels = intent_labels.replace("，", ",").replace("\n", ",").split(",")
+        seen: set[str] = set()
+        for x in raw_labels:
+            v = str(x).strip()[:100]
+            if v and v not in seen:
+                seen.add(v)
+                labels.append(v)
+            if len(labels) >= 200:
+                break
+
     rt = _find_report_template(report_template_id or None)
     model = report_model.strip() or _default_report_model()
 
@@ -469,6 +666,7 @@ async def upload_manual_task(
         "annotate_type_label": ANNOTATE_TYPE_LABELS[annotate_type],
         "gsb_swap_sides": str(gsb_swap_sides).lower() == "true",
         "dimensions": dims,
+        "intent_labels": labels,
         "report_template_id": rt["id"] if rt else None,
         "report_template_name": rt["name"] if rt else None,
         "report_model": model,
@@ -543,6 +741,17 @@ def annotate(mt_id: str, body: AnnotateBody) -> dict[str, Any]:
                 unit["judgment"] = body.judgment or None
                 if unit["judgment"]:
                     unit["skipped"] = False
+        elif mt["annotate_type"] == "INTENT":
+            if body.judgment is not None:
+                if body.judgment not in (*INTENT_JUDGMENTS, ""):
+                    raise HTTPException(status_code=400, detail="judgment 只能是 correct / partial / wrong")
+                unit["judgment"] = body.judgment or None
+                if unit["judgment"]:
+                    unit["skipped"] = False
+                if unit["judgment"] == "correct":
+                    unit["corrected_intent"] = ""
+            if body.corrected_intent is not None:
+                unit["corrected_intent"] = body.corrected_intent.strip()[:100]
         else:
             dims = mt.get("dimensions") or []
             valid_keys = {d["key"] for d in dims}
@@ -578,13 +787,45 @@ def _transcript(unit: dict[str, Any], limit: int = 1500) -> str:
     return text if len(text) <= limit else text[:limit] + "…"
 
 
+_INTENT_JUDGE_SCORE = {"correct": "Correct", "partial": "Partial", "wrong": "Wrong"}
+
+
 def _units_to_results(mt: dict[str, Any]) -> list[dict[str, Any]]:
     """把人工标注单元整形成 report.build_report / report_to_markdown 期望的 results 结构。"""
-    is_gsb = mt["annotate_type"] == "GSB"
+    at = mt["annotate_type"]
+    is_gsb = at == "GSB"
     dims = mt.get("dimensions") or []
     results: list[dict[str, Any]] = []
     for i, u in enumerate((x for x in mt["units"] if not x.get("skipped")), start=1):
-        if is_gsb:
+        if at == "INTENT":
+            j = u.get("judgment")
+            if j not in INTENT_JUDGMENTS:
+                continue
+            corrected = u.get("corrected_intent") or u.get("expected_intent") or ""
+            auto_reason = "" if j == "correct" else (
+                f"识别为「{u.get('predicted_intent', '')}」，应为「{corrected or '未知'}」"
+            )
+            body = f"系统识别意图：{u.get('predicted_intent', '')}"
+            if u.get("expected_intent"):
+                body += f"｜期望意图：{u['expected_intent']}"
+            results.append(
+                {
+                    "row_index": i,
+                    "query": u.get("query", ""),
+                    "content": body,
+                    "baseline": "",
+                    "status": "SUCCESS",
+                    "reason": u.get("note") or auto_reason,
+                    "confidence": None,
+                    "review_status": "APPROVED",
+                    "scores": {
+                        "judgment": _INTENT_JUDGE_SCORE[j],
+                        "predicted_intent": u.get("predicted_intent", ""),
+                        "corrected_intent": corrected,
+                    },
+                }
+            )
+        elif is_gsb:
             if u.get("judgment") not in ("G", "S", "B"):
                 continue
             results.append(
@@ -645,9 +886,15 @@ def _pseudo_task(mt: dict[str, Any]) -> dict[str, Any]:
 
 
 def _pseudo_benchmark(mt: dict[str, Any]) -> dict[str, Any]:
-    is_gsb = mt["annotate_type"] == "GSB"
+    at = mt["annotate_type"]
+    if at == "INTENT":
+        return {
+            "eval_method": "INTENT",
+            "type": "PROMPT",
+            "config": {"dimensions": [], "intent_labels": mt.get("intent_labels") or []},
+        }
     dims = mt.get("dimensions") or [{"key": "overall", "name": "总体", "weight": 100}]
-    return {"eval_method": "GSB" if is_gsb else "MULTI_DIM", "type": "PROMPT", "config": {"dimensions": dims}}
+    return {"eval_method": "GSB" if at == "GSB" else "MULTI_DIM", "type": "PROMPT", "config": {"dimensions": dims}}
 
 
 def _generate_report(mt_id: str) -> None:
@@ -735,6 +982,27 @@ def export_manual_task(mt_id: str) -> Response:
                     "index": u["index"],
                     "query": u["query"],
                     "judgment": "跳过" if u.get("skipped") else (u.get("judgment") or ""),
+                    "note": u.get("note", ""),
+                    "annotated_by": u.get("annotated_by") or "",
+                    "annotated_at": u.get("annotated_at") or "",
+                }
+            )
+    elif at == "INTENT":
+        fields = [
+            "index", "query", "predicted_intent", "expected_intent",
+            "judgment", "corrected_intent", "note", "annotated_by", "annotated_at",
+        ]
+        writer = csv.DictWriter(buf, fieldnames=fields, extrasaction="ignore")
+        writer.writeheader()
+        for u in mt["units"]:
+            writer.writerow(
+                {
+                    "index": u["index"],
+                    "query": u["query"],
+                    "predicted_intent": u.get("predicted_intent", ""),
+                    "expected_intent": u.get("expected_intent", ""),
+                    "judgment": "跳过" if u.get("skipped") else INTENT_JUDGMENT_LABELS.get(u.get("judgment"), ""),
+                    "corrected_intent": u.get("corrected_intent", ""),
                     "note": u.get("note", ""),
                     "annotated_by": u.get("annotated_by") or "",
                     "annotated_at": u.get("annotated_at") or "",

@@ -49,6 +49,49 @@ def _multi_result(idx, r_score, q_score, reason):
     }
 
 
+INTENT_BM = {"eval_method": "INTENT", "config": {"dimensions": [], "intent_labels": []}}
+
+
+def _intent_result(idx, judgment, predicted, corrected=""):
+    return {
+        "row_index": idx,
+        "query": f"查询{idx}",
+        "content": f"系统识别意图：{predicted}",
+        "status": "SUCCESS",
+        "reason": "" if judgment == "Correct" else f"应为{corrected}",
+        "confidence": None,
+        "review_status": "APPROVED",
+        "scores": {"judgment": judgment, "predicted_intent": predicted, "corrected_intent": corrected},
+    }
+
+
+def test_build_report_intent_accuracy_and_confusions():
+    results = [
+        _intent_result(1, "Correct", "天气查询"),
+        _intent_result(2, "Wrong", "天气查询", "股票查询"),
+        _intent_result(3, "Partial", "物流查询", "售后咨询"),
+        _intent_result(4, "Correct", "物流查询"),
+    ]
+    rep = report.build_report({**TASK, "eval_method": "INTENT"}, results, INTENT_BM)
+    s = rep["content"]["summary"]
+    assert rep["eval_method"] == "INTENT"
+    assert (s["correct"], s["partial"], s["wrong"]) == (2, 1, 1)
+    assert s["accuracy"] == 50.0
+    assert s["lenient_accuracy"] == 62.5
+    assert {(c["predicted"], c["corrected"]) for c in rep["content"]["confusions"]} == {
+        ("天气查询", "股票查询"),
+        ("物流查询", "售后咨询"),
+    }
+    md = report.report_to_markdown({**TASK, "eval_method": "INTENT"}, rep, results)
+    assert "意图准确率" in md and "高频混淆意图对" in md
+
+
+def test_template_sections_uses_intent_defaults():
+    out = report._template_sections({}, is_gsb=False, eval_method="INTENT")
+    assert out == report.INTENT_REPORT_SECTIONS
+    assert "GSB 专项评估" not in out
+
+
 def test_build_report_multi_dimension_stats_and_lowcount():
     results = [_multi_result(1, 5, 5, "好"), _multi_result(2, 2, 2, "差"), _multi_result(3, 4, 3, "一般")]
     rep = report.build_report(TASK, results, MULTI_BM)

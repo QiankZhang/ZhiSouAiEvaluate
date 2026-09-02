@@ -2180,6 +2180,64 @@ a {
   margin-top: 12px;
 }
 
+/* 意图准确率标注 */
+.intent-facts {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 0;
+}
+
+.intent-fact {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.intent-fact-label {
+  width: 120px;
+  flex: none;
+  font-size: 12px;
+  color: var(--text-tertiary);
+}
+
+.intent-chip {
+  display: inline-block;
+  padding: 3px 10px;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  font-weight: 500;
+  border: 1px solid var(--border-medium);
+  background: var(--bg-card);
+}
+
+.intent-chip.predicted {
+  border-color: var(--brand-20);
+  background: var(--brand-10);
+  color: var(--brand-dark);
+}
+
+.intent-chip.expected {
+  border-color: var(--success);
+  background: var(--success-10);
+  color: var(--success);
+}
+
+.intent-match-hint {
+  font-size: 12px;
+  color: var(--success);
+}
+
+.intent-match-hint.diff {
+  color: var(--warning);
+}
+
+.intent-correct {
+  border-top: 1px solid var(--border-light);
+  padding-top: 12px;
+}
+
 .bad-item {
   padding: 10px 12px;
   border: 1px solid var(--border-light);

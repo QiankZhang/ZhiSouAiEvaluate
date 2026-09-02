@@ -21,6 +21,13 @@ const TYPE_OPTIONS = [
   { value: "GSB", icon: "⚖", label: "GSB 标注", desc: "左右对比基线与实验，判定 G / S / B。字段：query / content / baseline" },
   { value: "MULTI_DIM", icon: "📊", label: "多维度评估标注", desc: "单条内容按维度打分。字段：query / content" },
   { value: "CONVERSATION", icon: "💬", label: "多轮对话标注", desc: "按 session 组织为一段对话整体打分。字段：session_id / turn / role / content" },
+  { value: "INTENT", icon: "🎯", label: "意图准确率标注", desc: "判断系统识别的意图是否正确。字段：query / predicted_intent（可选 expected_intent）" },
+];
+
+const INTENT_JUDGE_OPTIONS = [
+  ["correct", "g", "✓ 识别正确"],
+  ["partial", "s", "~ 部分正确"],
+  ["wrong", "b", "✗ 识别错误"],
 ];
 
 // 全平台统一默认维度：相关性 / 全面性 / 准确性 / 可读性 / 时效性，各 20%
@@ -42,6 +49,7 @@ function TypeBadge({ type }) {
 function unitDone(unit, type) {
   if (unit.skipped) return true;
   if (type === "GSB") return ["G", "S", "B"].includes(unit.judgment);
+  if (type === "INTENT") return ["correct", "partial", "wrong"].includes(unit.judgment);
   return unit.total != null;
 }
 
@@ -264,6 +272,7 @@ function CreateManualTaskModal({ open, onClose, onCreated, reportTemplates, mode
   const [type, setType] = useState("GSB");
   const [swapSides, setSwapSides] = useState(false);
   const [dims, setDims] = useState(RECOMMENDED_DIMS);
+  const [intentLabels, setIntentLabels] = useState("");
   const [reportTemplateId, setReportTemplateId] = useState("");
   const [reportModel, setReportModel] = useState("");
   const [file, setFile] = useState(null);
@@ -280,6 +289,7 @@ function CreateManualTaskModal({ open, onClose, onCreated, reportTemplates, mode
     setType("GSB");
     setSwapSides(false);
     setDims(RECOMMENDED_DIMS);
+    setIntentLabels("");
     setReportTemplateId(reportTemplates[0]?.id || "");
     setReportModel(
       liveModels.some((m) => m.id === DEFAULT_REPORT_MODEL) ? DEFAULT_REPORT_MODEL : liveModels[0]?.id || ""
@@ -292,7 +302,8 @@ function CreateManualTaskModal({ open, onClose, onCreated, reportTemplates, mode
 
   const needsDims = type === "MULTI_DIM" || type === "CONVERSATION";
   const totalWeight = dims.reduce((s, d) => s + (Number(d.weight) || 0), 0);
-  const accept = type === "CONVERSATION" ? ".jsonl,.json,.csv" : ".csv,.xlsx";
+  const accept =
+    type === "CONVERSATION" ? ".jsonl,.json,.csv" : type === "INTENT" ? ".csv,.json,.jsonl" : ".csv,.xlsx";
 
   function setDim(i, patch) {
     setDims((prev) => prev.map((d, idx) => (idx === i ? { ...d, ...patch } : d)));
@@ -320,6 +331,7 @@ function CreateManualTaskModal({ open, onClose, onCreated, reportTemplates, mode
       fd.append("annotate_type", type);
       fd.append("dimensions", JSON.stringify(needsDims ? dims : []));
       fd.append("gsb_swap_sides", String(swapSides));
+      fd.append("intent_labels", type === "INTENT" ? intentLabels : "");
       fd.append("report_template_id", reportTemplateId);
       fd.append("report_model", reportModel);
       fd.append("file", file);
@@ -382,7 +394,32 @@ function CreateManualTaskModal({ open, onClose, onCreated, reportTemplates, mode
         </Field>
       ) : null}
 
-      <Field label="数据文件" required hint={type === "CONVERSATION" ? "JSONL / JSON / CSV，按 session_id 分组" : "CSV / XLSX"}>
+      {type === "INTENT" ? (
+        <Field
+          label="意图类别清单"
+          hint="选填 · 每行一个或用逗号分隔。填写后标注「正确意图」时可从下拉选择，留空则手动输入"
+        >
+          <textarea
+            className="textarea"
+            value={intentLabels}
+            onChange={(e) => setIntentLabels(e.target.value)}
+            placeholder={"天气查询\n物流查询\n售后咨询\n闲聊"}
+            rows={4}
+          />
+        </Field>
+      ) : null}
+
+      <Field
+        label="数据文件"
+        required
+        hint={
+          type === "CONVERSATION"
+            ? "JSONL / JSON / CSV，按 session_id 分组"
+            : type === "INTENT"
+              ? "CSV / JSON / JSONL，含 query、predicted_intent 列"
+              : "CSV / XLSX"
+        }
+      >
         <div className="inline" style={{ gap: 8, marginBottom: 8 }}>
           <Button size="sm" icon="download" onClick={downloadTemplate}>
             下载 {ANNOTATE_TYPE_LABELS[type]} 模板
@@ -597,11 +634,18 @@ export function ManualAnnotatePage({ id, navigate }) {
                 <GsbPanel unit={current} swap={task.gsb_swap_sides} onJudge={(j) => save({ judgment: j }, { advance: true })} />
               ) : type === "CONVERSATION" ? (
                 <ConversationPanel unit={current} />
+              ) : type === "INTENT" ? (
+                <IntentPanel
+                  unit={current}
+                  labels={task.intent_labels || []}
+                  onJudge={(j) => save({ judgment: j }, { advance: j === "correct" })}
+                  onCorrect={(v) => save({ corrected_intent: v })}
+                />
               ) : (
                 <MultiContentPanel unit={current} />
               )}
 
-              {type !== "GSB" ? (
+              {type !== "GSB" && type !== "INTENT" ? (
                 <DimScoreEditor
                   dimensions={task.dimensions}
                   unit={current}
@@ -699,6 +743,83 @@ function ConversationPanel({ unit }) {
   );
 }
 
+function IntentPanel({ unit, labels, onJudge, onCorrect }) {
+  const predicted = unit.predicted_intent || "（空）";
+  const expected = (unit.expected_intent || "").trim();
+  const match = expected && expected.toLowerCase() === (unit.predicted_intent || "").trim().toLowerCase();
+  const needCorrect = unit.judgment === "wrong" || unit.judgment === "partial";
+  return (
+    <>
+      <div className="annotate-query">{unit.query}</div>
+      <div className="intent-facts">
+        <div className="intent-fact">
+          <span className="intent-fact-label">系统识别意图</span>
+          <span className="intent-chip predicted">{predicted}</span>
+        </div>
+        {expected ? (
+          <div className="intent-fact">
+            <span className="intent-fact-label">期望意图（金标准）</span>
+            <span className="intent-chip expected">{expected}</span>
+            <span className={`intent-match-hint${match ? "" : " diff"}`}>
+              {match ? "与识别一致" : "与识别不一致"}
+            </span>
+          </div>
+        ) : null}
+        {unit.scene ? (
+          <div className="intent-fact">
+            <span className="intent-fact-label">场景</span>
+            <span className="text-secondary">{unit.scene}</span>
+          </div>
+        ) : null}
+      </div>
+
+      <div className="annotate-actions">
+        {INTENT_JUDGE_OPTIONS.map(([val, cls, label]) => (
+          <button
+            key={val}
+            className={`gsb-btn ${cls}${unit.judgment === val ? " active" : ""}`}
+            onClick={() => onJudge(val)}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {needCorrect ? (
+        <div className="intent-correct">
+          <Field
+            label="正确意图"
+            hint={labels.length ? "从意图类别清单中选择" : "填写该 query 实际应归属的意图"}
+          >
+            {labels.length ? (
+              <select className="select" value={unit.corrected_intent || ""} onChange={(e) => onCorrect(e.target.value)}>
+                <option value="">请选择…</option>
+                {labels.map((l) => (
+                  <option key={l} value={l}>
+                    {l}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <input
+                className="input"
+                key={unit.key}
+                defaultValue={unit.corrected_intent || ""}
+                placeholder="如：售后咨询"
+                maxLength={100}
+                onBlur={(e) => {
+                  const v = e.target.value.trim();
+                  if (v !== (unit.corrected_intent || "")) onCorrect(v);
+                }}
+              />
+            )}
+          </Field>
+        </div>
+      ) : null}
+    </>
+  );
+}
+
 function DimScoreEditor({ dimensions, unit, onScore, onOverride }) {
   const scores = unit.dim_scores || {};
   const overridden = unit.overridden_total != null;
@@ -786,6 +907,7 @@ export function ManualSummaryPage({ id, navigate }) {
 
   const s = task.summary || {};
   const isGSB = s.eval_method === "GSB";
+  const isIntent = s.eval_method === "INTENT";
   const completed = task.status === "COMPLETED";
 
   async function generate() {
@@ -801,7 +923,9 @@ export function ManualSummaryPage({ id, navigate }) {
 
   const badUnits = (task.units || []).filter((u) => {
     if (u.skipped) return false;
-    return isGSB ? u.judgment === "B" : u.total != null && u.total < 3;
+    if (isGSB) return u.judgment === "B";
+    if (isIntent) return u.judgment === "wrong";
+    return u.total != null && u.total < 3;
   });
 
   return (
@@ -849,17 +973,27 @@ export function ManualSummaryPage({ id, navigate }) {
       </div>
 
       <section className="card">
-        <div className="card-title">分数汇总</div>
-        {isGSB ? <GsbSummary s={s} /> : <MultiSummary s={s} />}
+        <div className="card-title">{isIntent ? "意图准确率汇总" : "分数汇总"}</div>
+        {isIntent ? <IntentSummary s={s} /> : isGSB ? <GsbSummary s={s} /> : <MultiSummary s={s} />}
       </section>
 
       {badUnits.length ? (
         <section className="card">
-          <div className="card-title">{isGSB ? "被判 B 的样本" : "低分样本（总分 < 3）"}（{badUnits.length}）</div>
+          <div className="card-title">
+            {isGSB ? "被判 B 的样本" : isIntent ? "识别错误的样本" : "低分样本（总分 < 3）"}（{badUnits.length}）
+          </div>
           <div className="bad-list">
             {badUnits.map((u) => (
               <div key={u.key} className="bad-item">
                 <div className="cell-primary">{unitTitle(u)}</div>
+                {isIntent ? (
+                  <div className="cell-secondary">
+                    识别为「{u.predicted_intent || "—"}」
+                    {u.corrected_intent || u.expected_intent
+                      ? ` ／ 应为「${u.corrected_intent || u.expected_intent}」`
+                      : ""}
+                  </div>
+                ) : null}
                 {u.note ? <div className="cell-secondary">{u.note}</div> : <div className="cell-tertiary">（未填备注）</div>}
               </div>
             ))}
@@ -882,6 +1016,78 @@ export function ManualSummaryPage({ id, navigate }) {
           />
         )}
       </section>
+    </div>
+  );
+}
+
+function IntentSummary({ s }) {
+  const n = (s.correct || 0) + (s.partial || 0) + (s.wrong || 0);
+  const pct = (x) => (n ? (x / n) * 100 : 0);
+  return (
+    <div className="mt-16">
+      <div className="inline" style={{ gap: 24, marginBottom: 16, flexWrap: "wrap" }}>
+        <div>
+          意图准确率 <b style={{ fontSize: 22 }}>{s.accuracy ?? 0}%</b>
+        </div>
+        <div className="text-tertiary">
+          宽松口径 {s.lenient_accuracy ?? 0}%（部分正确计 0.5）
+        </div>
+        <div className="text-tertiary">
+          最弱：{s.weakest_intent || "—"} ／ 最强：{s.strongest_intent || "—"}
+        </div>
+      </div>
+
+      <div className="gsb-bar">
+        <div className="gsb-bar-seg" style={{ width: `${pct(s.correct)}%`, background: "var(--success)" }} />
+        <div className="gsb-bar-seg" style={{ width: `${pct(s.partial)}%`, background: "var(--brand)" }} />
+        <div className="gsb-bar-seg" style={{ width: `${pct(s.wrong)}%`, background: "var(--warning)" }} />
+      </div>
+      <div className="gsb-legend mt-8">
+        <span>
+          <span className="gsb-legend-dot" style={{ background: "var(--success)" }} />正确 {s.correct || 0}
+        </span>
+        <span>
+          <span className="gsb-legend-dot" style={{ background: "var(--brand)" }} />部分正确 {s.partial || 0}
+        </span>
+        <span>
+          <span className="gsb-legend-dot" style={{ background: "var(--warning)" }} />错误 {s.wrong || 0}
+        </span>
+      </div>
+
+      {(s.intents || []).length ? (
+        <div style={{ marginTop: 18 }}>
+          <div className="text-tertiary" style={{ fontSize: 12, marginBottom: 6 }}>按识别意图</div>
+          {s.intents.map((a) => (
+            <div className="msum-dim" key={a.intent}>
+              <div className="inline" style={{ justifyContent: "space-between" }}>
+                <span>{a.intent}</span>
+                <span>
+                  {a.accuracy}% · {a.correct}/{a.total}
+                </span>
+              </div>
+              <div className="msum-bar">
+                <div className="msum-bar-fill" style={{ width: `${a.accuracy}%` }} />
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : null}
+
+      {(s.confusions || []).length ? (
+        <div style={{ marginTop: 18 }}>
+          <div className="text-tertiary" style={{ fontSize: 12, marginBottom: 6 }}>高频混淆意图对</div>
+          <div className="bad-list">
+            {s.confusions.map((c, i) => (
+              <div key={i} className="bad-item inline" style={{ gap: 8, alignItems: "center" }}>
+                <span className="intent-chip predicted">{c.predicted}</span>
+                <span className="text-tertiary">→</span>
+                <span className="intent-chip expected">{c.corrected}</span>
+                <span className="text-tertiary" style={{ marginLeft: "auto" }}>×{c.count}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

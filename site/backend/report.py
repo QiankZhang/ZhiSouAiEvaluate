@@ -179,6 +179,9 @@ def build_report(task: dict[str, Any], results: list[dict[str, Any]], benchmark:
         }
         return {"status": "READY", "eval_method": eval_method, "content": content}
 
+    if eval_method == "INTENT":
+        return _build_intent_report(task, results, total, use_llm)
+
     dims = benchmark["config"]["dimensions"]
     dim_stats = []
     for d in dims:
@@ -224,6 +227,73 @@ def build_report(task: dict[str, Any], results: list[dict[str, Any]], benchmark:
     return {"status": "READY", "eval_method": eval_method, "content": content}
 
 
+def _build_intent_report(
+    task: dict[str, Any], results: list[dict[str, Any]], total: int, use_llm: bool
+) -> dict[str, Any]:
+    """意图准确率报告：judgment ∈ Correct / Partial / Wrong，按识别意图分项统计并聚合高频混淆意图对。"""
+
+    def _j(r: dict[str, Any]) -> str:
+        return _effective_scores(r).get("judgment", "")
+
+    correct = sum(1 for r in results if _j(r) == "Correct")
+    partial = sum(1 for r in results if _j(r) == "Partial")
+    wrong = sum(1 for r in results if _j(r) == "Wrong")
+    denom = correct + partial + wrong or 1
+
+    agg: dict[str, dict[str, Any]] = {}
+    for r in results:
+        s = _effective_scores(r)
+        key = s.get("predicted_intent") or "（空）"
+        a = agg.setdefault(key, {"intent": key, "total": 0, "correct": 0, "wrong": 0})
+        a["total"] += 1
+        if s.get("judgment") == "Correct":
+            a["correct"] += 1
+        elif s.get("judgment") == "Wrong":
+            a["wrong"] += 1
+    intents: list[dict[str, Any]] = []
+    for a in agg.values():
+        a["accuracy"] = round(a["correct"] / a["total"] * 100, 1) if a["total"] else 0.0
+        intents.append(a)
+    intents.sort(key=lambda x: (-x["total"], x["accuracy"]))
+
+    conf: dict[tuple[str, str], int] = {}
+    for r in results:
+        s = _effective_scores(r)
+        if s.get("judgment") in ("Wrong", "Partial"):
+            pair = (s.get("predicted_intent") or "—", s.get("corrected_intent") or "—")
+            conf[pair] = conf.get(pair, 0) + 1
+    confusions = [
+        {"predicted": p, "corrected": c, "count": k}
+        for (p, c), k in sorted(conf.items(), key=lambda x: -x[1])[:8]
+    ]
+
+    badcases = [
+        {"query": r["query"], "content": r["content"], "reason": r["reason"]}
+        for r in results
+        if _effective_scores(r).get("judgment") == "Wrong"
+    ]
+    error_cases = _build_error_cases(badcases, task["judge_model"], use_llm)
+    weakest = min(intents, key=lambda x: x["accuracy"]) if intents else None
+    strongest = max(intents, key=lambda x: x["accuracy"]) if intents else None
+    content = {
+        "summary": {
+            "total": total,
+            "correct": correct,
+            "partial": partial,
+            "wrong": wrong,
+            "accuracy": round(correct / denom * 100, 1),
+            "lenient_accuracy": round((correct + 0.5 * partial) / denom * 100, 1),
+            "weakest_intent": weakest["intent"] if weakest else None,
+            "strongest_intent": strongest["intent"] if strongest else None,
+        },
+        "intents": intents,
+        "confusions": confusions,
+        "error_cases": error_cases,
+        "suggestions": _suggestions("INTENT", weakest["intent"] if weakest else None, error_cases["typical"]),
+    }
+    return {"status": "READY", "eval_method": "INTENT", "content": content}
+
+
 def _suggestions(eval_method: str, weakest_dim: str | None, typical_cases: list[dict[str, Any]]) -> list[str]:
     """每条建议尽量关联一个具体 case 作为依据，避免空泛（对应 SKILL.md 第五节要求）。"""
     cite = None
@@ -238,6 +308,17 @@ def _suggestions(eval_method: str, weakest_dim: str | None, typical_cases: list[
             tips.append(f"{cite}——建议针对此类问题补充人工归因规则，沉淀为回归用例集。")
         else:
             tips.append("针对被判 Bad 的样本做人工归因，沉淀为回归用例集。")
+        return tips
+
+    if eval_method == "INTENT":
+        tips: list[str] = []
+        if weakest_dim:
+            tips.append(f"「{weakest_dim}」意图当前准确率最低，建议作为下一轮意图识别迭代的重点。")
+        tips.append("对识别错误的样本按「正确意图」聚类，优先补充高频混淆意图对的判别特征与训练语料。")
+        if cite:
+            tips.append(f"{cite}——建议沉淀为意图识别回归用例。")
+        else:
+            tips.append("对识别错误的样本做人工归因，沉淀为意图识别回归用例集。")
         return tips
 
     tips = [
@@ -264,6 +345,15 @@ DEFAULT_REPORT_SECTIONS = [
     "改进建议",
 ]
 
+# 意图准确率报告的默认章节（不含 GSB 专项 / 分维度）。
+INTENT_REPORT_SECTIONS = [
+    "整体结论（意图准确率）",
+    "各意图分项准确率",
+    "高频混淆意图对",
+    "典型错误 case 分析",
+    "改进建议",
+]
+
 # 「提示词」类型报告模板的默认提示词。{章节} 会被替换为模板配置的章节清单。
 DEFAULT_REPORT_PROMPT = (
     "你是「智搜策略效果评估」平台的评估报告撰写助手。基于用户提供的评测统计与样本数据，"
@@ -275,18 +365,23 @@ DEFAULT_REPORT_PROMPT = (
 )
 
 
-def _template_sections(cfg: dict[str, Any], is_gsb: bool) -> list[str]:
-    raw = cfg.get("sections") or DEFAULT_REPORT_SECTIONS
+def _template_sections(cfg: dict[str, Any], is_gsb: bool, eval_method: str = "") -> list[str]:
+    default = INTENT_REPORT_SECTIONS if eval_method == "INTENT" else DEFAULT_REPORT_SECTIONS
+    raw = cfg.get("sections") or default
     out = [s.strip() for s in raw if isinstance(s, str) and s.strip()]
     if not is_gsb:
         out = [s for s in out if s != GSB_SECTION]
-    fallback = [s for s in DEFAULT_REPORT_SECTIONS if is_gsb or s != GSB_SECTION]
+    fallback = [s for s in default if is_gsb or s != GSB_SECTION]
     return out or fallback
 
 
+_INTENT_JUDGE_CN = {"Correct": "正确", "Partial": "部分正确", "Wrong": "错误"}
+
+
 def _report_payload(
-    task: dict[str, Any], report: dict[str, Any], results: list[dict[str, Any]], is_gsb: bool
+    task: dict[str, Any], report: dict[str, Any], results: list[dict[str, Any]], is_gsb: bool, eval_method: str = ""
 ) -> dict[str, Any]:
+    is_intent = eval_method == "INTENT"
     content = report.get("content", {})
     # 只送精简明细：query + 分数/判定 + 简短理由。原文片段仅错误 case 需要，已在
     # content["error_cases"] 里携带——整份 content 原文会让提示词膨胀到数万 token 而超时。
@@ -294,7 +389,11 @@ def _report_payload(
     for r in results[:120]:
         s = _effective_scores(r)
         row: dict[str, Any] = {"query": r["query"], "reason": (r.get("reason") or "")[:160]}
-        if is_gsb:
+        if is_intent:
+            row["judgment"] = _INTENT_JUDGE_CN.get(s.get("judgment", ""), s.get("judgment"))
+            row["predicted_intent"] = s.get("predicted_intent")
+            row["corrected_intent"] = s.get("corrected_intent") or None
+        elif is_gsb:
             row["judgment"] = s.get("judgment")
             row["exp_vs_base"] = f"{s.get('total')} vs {s.get('baseline_total')}"
         else:
@@ -311,12 +410,13 @@ def _report_payload(
                 for c in error_cases["typical"]
             ],
         }
+    method_label = "意图准确率" if is_intent else ("GSB 对比" if is_gsb else "多维度打分")
     return {
         "任务": {
             "name": task["name"],
             "task_id": task.get("id"),
             "task_type": task.get("task_type"),
-            "eval_method": "GSB 对比" if is_gsb else "多维度打分",
+            "eval_method": method_label,
             "benchmark": task.get("benchmark_name"),
             "dataset": task.get("dataset_name"),
             "judge_model": task.get("judge_model"),
@@ -325,6 +425,8 @@ def _report_payload(
         },
         "统计摘要": content.get("summary", {}),
         "分维度统计": content.get("dimensions"),
+        "各意图分项统计": content.get("intents"),
+        "高频混淆意图对": content.get("confusions"),
         "总分分布": content.get("distribution"),
         "错误case归因": error_cases,
         "样本明细": samples,
@@ -348,7 +450,7 @@ _OUTPUT_RULES = (
 )
 
 
-def _template_system_prompt(template: dict[str, Any], is_gsb: bool) -> str:
+def _template_system_prompt(template: dict[str, Any], is_gsb: bool, eval_method: str = "") -> str:
     cfg = template.get("config") or {}
     if template.get("type") == "SKILL" and (cfg.get("skill") or {}).get("instructions"):
         return (
@@ -357,7 +459,7 @@ def _template_system_prompt(template: dict[str, Any], is_gsb: bool) -> str:
             "=== 技能说明 ===\n" + cfg["skill"]["instructions"] + _OUTPUT_RULES
         )
     tmpl = cfg.get("prompt_template") or DEFAULT_REPORT_PROMPT
-    section_lines = "\n".join(f"{i + 1}. {s}" for i, s in enumerate(_template_sections(cfg, is_gsb)))
+    section_lines = "\n".join(f"{i + 1}. {s}" for i, s in enumerate(_template_sections(cfg, is_gsb, eval_method)))
     return tmpl.replace("{章节}", section_lines).replace("{sections}", section_lines) + _OUTPUT_RULES
 
 
@@ -367,10 +469,11 @@ def _report_markdown_llm(
     results: list[dict[str, Any]],
     template: dict[str, Any],
     is_gsb: bool,
+    eval_method: str = "",
 ) -> str | None:
     """按报告模板（提示词 / 技能）驱动裁判员模型撰写 Markdown 报告。失败返回 None，调用方回退确定性模板。"""
-    payload = _report_payload(task, report, results, is_gsb)
-    system = _template_system_prompt(template, is_gsb)
+    payload = _report_payload(task, report, results, is_gsb, eval_method)
+    system = _template_system_prompt(template, is_gsb, eval_method)
     try:
         resp = llm.chat_completion(
             [
@@ -407,10 +510,11 @@ def generate_report_markdown(
     template: dict[str, Any] | None = None,
 ) -> str:
     """任务完成时产出报告 Markdown：按所选报告模板走真实模型生成，无模板/模拟引擎/失败时回退确定性五段式模板。"""
-    is_gsb = report.get("eval_method") == "GSB"
+    eval_method = report.get("eval_method") or ""
+    is_gsb = eval_method == "GSB"
     use_llm = config.engine_for(task["judge_model"]) == "agent" and llm.is_live(task["judge_model"])
     if use_llm and template:
-        md = _report_markdown_llm(task, report, results, template, is_gsb)
+        md = _report_markdown_llm(task, report, results, template, is_gsb, eval_method)
         if md:
             return md
     return report_to_markdown(task, report, results)
@@ -426,8 +530,9 @@ def report_to_markdown(task: dict[str, Any], report: dict[str, Any], results: li
     content = report.get("content", {})
     summary = content.get("summary", {})
     is_gsb = report.get("eval_method") == "GSB"
+    is_intent = report.get("eval_method") == "INTENT"
     review_label = REVIEW_STATUS_LABELS.get(task["review_status"], task["review_status"])
-    method_label = "GSB 对比" if is_gsb else "多维度"
+    method_label = "意图准确率" if is_intent else ("GSB 对比" if is_gsb else "多维度")
 
     L: list[str] = [
         f"# {task['name']} · 评估报告",
@@ -441,7 +546,36 @@ def report_to_markdown(task: dict[str, Any], report: dict[str, Any], results: li
         "## 一、整体结论",
         "",
     ]
-    if is_gsb:
+    if is_intent:
+        L += [
+            f"- **意图准确率**：{summary.get('accuracy', 0)}%（严格口径 = 正确 / 已判定）；"
+            f"宽松口径 {summary.get('lenient_accuracy', 0)}%（部分正确计 0.5）。",
+            f"- **判定分布**：正确 {summary.get('correct', 0)}、部分正确 {summary.get('partial', 0)}、"
+            f"错误 {summary.get('wrong', 0)}（合计已判定 "
+            f"{summary.get('correct', 0) + summary.get('partial', 0) + summary.get('wrong', 0)} 条）。",
+            f"- **核心结论**：准确率最低意图为「{summary.get('weakest_intent', '—')}」，"
+            f"最高为「{summary.get('strongest_intent', '—')}」。",
+            "",
+            "## 二、各意图分项准确率",
+            "",
+            "| 识别意图 | 样本数 | 命中 | 错误 | 准确率 |",
+            "| --- | --- | --- | --- | --- |",
+        ]
+        for a in content.get("intents", []):
+            L.append(
+                f"| {_md_cell(a['intent'])} | {a['total']} | {a['correct']} | {a['wrong']} | {a['accuracy']}% |"
+            )
+        L.append("")
+        confusions = content.get("confusions") or []
+        L += ["## 三、高频混淆意图对", ""]
+        if confusions:
+            L += ["| 识别为 | 实际应为 | 次数 |", "| --- | --- | --- |"]
+            for c in confusions:
+                L.append(f"| {_md_cell(c['predicted'])} | {_md_cell(c['corrected'])} | {c['count']} |")
+        else:
+            L.append("无（识别错误 / 部分正确样本未提供正确意图，或暂无错误样本）。")
+        L.append("")
+    elif is_gsb:
         L.append(
             f"- **GSB 速览**：G:S:B = {summary.get('good', 0)}:{summary.get('same', 0)}:{summary.get('bad', 0)}"
             f"，胜率 {summary.get('win_rate', 0)}%，净胜率 {summary.get('net_win_rate', 0)}%。"
@@ -504,7 +638,19 @@ def report_to_markdown(task: dict[str, Any], report: dict[str, Any], results: li
 
     if results:
         L += ["## 附：逐样本明细", ""]
-        if is_gsb:
+        if is_intent:
+            L += [
+                "| # | Query | 识别意图 | 判定 | 正确意图 | 理由 |",
+                "| --- | --- | --- | --- | --- | --- |",
+            ]
+            for r in results:
+                s = _effective_scores(r)
+                jl = _INTENT_JUDGE_CN.get(s.get("judgment", ""), "—")
+                L.append(
+                    f"| {r['row_index']} | {_md_cell(r['query'])} | {_md_cell(s.get('predicted_intent', '—'))} "
+                    f"| {jl} | {_md_cell(s.get('corrected_intent') or '—')} | {_md_cell(r['reason'])} |"
+                )
+        elif is_gsb:
             L += ["| # | Query | 判定 | 实验 vs 基线 | 理由 |", "| --- | --- | --- | --- | --- |"]
             for r in results:
                 s = _effective_scores(r)
