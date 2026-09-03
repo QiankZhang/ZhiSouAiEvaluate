@@ -1,5 +1,32 @@
+// 办公网 → 目标机链路存在偶发丢包 / 连接被中间设备重置（详见 site/deploy/UPDATE.md），
+// 对「网络层失败」和「网关类 5xx（502/503/504）」做有限次自动重试兜底。
+// - 网络错误（fetch 直接 reject，请求多半没到达服务端）：所有方法都重试
+// - 502/503/504：只重试幂等的 GET，避免 POST/PUT/DELETE 重复副作用
+const RETRY_MAX = 5;
+const RETRY_GATEWAY_STATUS = new Set([502, 503, 504]);
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+async function fetchWithRetry(path, init) {
+  const method = (init.method || "GET").toUpperCase();
+  let lastErr;
+  for (let attempt = 0; attempt <= RETRY_MAX; attempt++) {
+    if (attempt > 0) await sleep(Math.min(300 * 2 ** (attempt - 1), 3000));
+    try {
+      const response = await fetch(path, init);
+      if (RETRY_GATEWAY_STATUS.has(response.status) && method === "GET" && attempt < RETRY_MAX) {
+        continue;
+      }
+      return response;
+    } catch (err) {
+      lastErr = err; // TypeError: Failed to fetch —— 连接被重置 / 超时
+      if (attempt >= RETRY_MAX) throw err;
+    }
+  }
+  throw lastErr;
+}
+
 async function request(path, options = {}) {
-  const response = await fetch(path, {
+  const response = await fetchWithRetry(path, {
     headers: options.body instanceof FormData ? undefined : { "Content-Type": "application/json" },
     ...options,
   });
@@ -35,7 +62,7 @@ export const api = {
 // 触发浏览器下载后端返回的文件（CSV 导出 / 模板 / 数据集下载等），复用同一份鉴权 fetch，
 // 而不是直接 <a href> 跳转（避免相对路径在生产反代下失效，也便于统一处理失败提示）。
 export async function downloadFile(path, fallbackName = "download") {
-  const response = await fetch(path);
+  const response = await fetchWithRetry(path, {});
   if (!response.ok) {
     let message = `下载失败（HTTP ${response.status}）`;
     try {

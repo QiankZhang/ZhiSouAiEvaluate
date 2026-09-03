@@ -36,3 +36,6 @@ coverage/
 # --- 操作系统 ---
 .DS_Store
 Thumbs.db
+
+# 本地打的技能包测试用 zip（含 .DS_Store 等），不入库
+skills/*.zip
