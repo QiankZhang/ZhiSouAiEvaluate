@@ -23,6 +23,7 @@ from . import (
     engine as engine_mod,
     llm,
     report as report_mod,
+    scoring,
     skills_registry,
 )
 
@@ -174,6 +175,7 @@ def _new_benchmark(
             "prompt_template": "你是评测裁判。请依据以下维度与评分标准，对给定内容进行评测。\n{维度}\n{评分标准}\n\n查询：{query}\n待评内容：{待评内容}\n{基线内容}",
             "variables": ["{query}", "{待评内容}", "{基线内容}", "{维度}", "{评分标准}"],
             "dimensions": dimensions,
+            "scoring": dict(scoring.DEFAULT_SCORING),
             "gsb": {
                 "baseline_field": "baseline",
                 "rules": "实验优于基线为 Good，持平为 Same，劣于基线为 Bad",
@@ -207,44 +209,53 @@ _REASON_MID = ["基本命中主题，但部分信息不够完整。", "内容相
 _REASON_LOW = ["与查询意图偏差较大，信息不完整。", "关键信息缺失，参考价值有限。", "内容零散，结构不清，需进一步优化。"]
 
 
-def _reason_for(score: int) -> str:
-    if score >= 5:
-        return _REASON_HIGH[score % len(_REASON_HIGH)]
-    if score >= 4:
-        return _REASON_HIGH[(score + 1) % len(_REASON_HIGH)]
-    if score >= 3:
-        return _REASON_MID[score % len(_REASON_MID)]
-    return _REASON_LOW[score % len(_REASON_LOW)]
+def _reason_for(ratio: float) -> str:
+    """入参是 0~1 的归一得分率（旧签名传 1~5 分时也能兼容：>1 视为按 5 折算）。"""
+    if ratio > 1:
+        ratio = ratio / 5.0
+    if ratio >= 0.85:
+        return _REASON_HIGH[round(ratio * 10) % len(_REASON_HIGH)]
+    if ratio >= 0.5:
+        return _REASON_MID[round(ratio * 10) % len(_REASON_MID)]
+    return _REASON_LOW[round(ratio * 10) % len(_REASON_LOW)]
 
 
-def _dim_score(query: str, content: str, key: str) -> int:
-    n = _stable_noise(query, content, key)
-    return max(1, min(5, round(3.1 + (n - 0.5) * 2.4)))
+def _dim_score(query: str, content: str, dim: dict[str, Any]) -> Any:
+    """确定性模拟：给出落在该维度取值域内的一个分值（整数区间取整数，枚举取枚举值）。"""
+    d = scoring.normalize_dimension(dim)
+    n = _stable_noise(query, content, d["key"])
+    values = scoring.allowed_values(d)
+    if not values:
+        return 3
+    # 偏向中高分：把 [0,1) 噪声映射到偏后段的下标
+    idx = min(len(values) - 1, int((0.55 + n * 0.4) * len(values)))
+    return values[idx]
 
 
 def _evaluate_item(item: dict[str, str], benchmark: dict[str, Any]) -> dict[str, Any]:
-    dims = benchmark["config"]["dimensions"]
+    cfg = scoring.normalize_config(benchmark["config"])
+    dims = cfg["dimensions"]
+    scoring_cfg = cfg["scoring"]
     conf = round(0.66 + _stable_noise(item["query"], item["content"], "conf") * 0.32, 2)
 
     if benchmark["eval_method"] == "GSB":
-        exp_total = sum(_dim_score(item["query"], item["content"], d["key"]) * d["weight"] for d in dims) / 100
-        base_total = sum(_dim_score(item["query"], item["baseline"] or item["content"], d["key"]) * d["weight"] for d in dims) / 100
-        diff = round(exp_total - base_total, 2)
-        if diff > 0.18:
-            judgment = "Good"
-        elif diff < -0.18:
-            judgment = "Bad"
-        else:
-            judgment = "Same"
+        exp_by_key = {d["key"]: _dim_score(item["query"], item["content"], d) for d in dims}
+        base_src = item.get("baseline") or item["content"]
+        base_by_key = {d["key"]: _dim_score(item["query"], base_src, d) for d in dims}
+        exp_agg = scoring.aggregate(dims, exp_by_key, scoring_cfg)
+        base_agg = scoring.aggregate(dims, base_by_key, scoring_cfg)
+        judgment, _diff = scoring.gsb_judgment(exp_agg, base_agg, scoring_cfg)
         dim_scores = [
-            {"key": d["key"], "name": d["name"], "score": _dim_score(item["query"], item["content"], d["key"])}
+            {"key": d["key"], "name": d["name"], "score": exp_by_key[d["key"]], "baseline_score": base_by_key[d["key"]]}
             for d in dims
         ]
         scores = {
             "judgment": judgment,
             "dimensions": dim_scores,
-            "total": round(exp_total, 2),
-            "baseline_total": round(base_total, 2),
+            "total": exp_agg["total"],
+            "baseline_total": base_agg["total"],
+            "total_ratio": exp_agg["total_ratio"],
+            "baseline_total_ratio": base_agg["total_ratio"],
             "confidence": conf,
         }
         reason = "实验策略结果" + ("优于" if judgment == "Good" else "持平于" if judgment == "Same" else "劣于") + "基线策略。"
@@ -260,13 +271,23 @@ def _evaluate_item(item: dict[str, str], benchmark: dict[str, Any]) -> dict[str,
             "review_status": "PENDING",
         }
 
+    scores_by_key: dict[str, Any] = {}
     dim_scores = []
     for d in dims:
-        s = _dim_score(item["query"], item["content"], d["key"])
-        dim_scores.append({"key": d["key"], "name": d["name"], "score": s, "reason": _reason_for(s)})
-    weighted = sum(s["score"] * d["weight"] for s, d in zip(dim_scores, dims)) / 100
-    total = round(weighted, 2)
-    scores = {"dimensions": dim_scores, "total": total, "confidence": conf}
+        s = _dim_score(item["query"], item["content"], d)
+        scores_by_key[d["key"]] = s
+        dim_scores.append(
+            {"key": d["key"], "name": d["name"], "score": s, "reason": _reason_for(scoring.ratio_of(d, s) or 0.0)}
+        )
+    agg = scoring.aggregate(dims, scores_by_key, scoring_cfg)
+    scores: dict[str, Any] = {"dimensions": dim_scores, "total": agg["total"], "total_ratio": agg["total_ratio"], "confidence": conf}
+    if agg["grade_label"]:
+        scores["grade_label"] = agg["grade_label"]
+    if agg["vetoed"]:
+        scores["vetoed"] = agg["vetoed"]
+    reason = _reason_for(agg["total_ratio"])
+    if agg["vetoed"]:
+        reason = f"[否决] {agg['vetoed']} 触发拦截。" + reason
     return {
         "row_index": item["row_index"],
         "query": item["query"],
@@ -274,7 +295,7 @@ def _evaluate_item(item: dict[str, str], benchmark: dict[str, Any]) -> dict[str,
         "baseline": "",
         "status": "SUCCESS",
         "scores": scores,
-        "reason": _reason_for(round(total)),
+        "reason": reason,
         "confidence": conf,
         "review_status": "PENDING",
     }
@@ -542,6 +563,9 @@ class BenchmarkCreate(BaseModel):
     gsb_rules: Optional[str] = None
     gsb_adjudication_dimension: Optional[str] = None
     confidence_enabled: bool = True
+    # 聚合配置：{mode, display_scale, low_score_ratio, gsb_good_threshold, grade_thresholds}
+    # 见 scoring.py / 多维度评估基准优化设计.md；缺省走 weighted_raw（还原旧的 Σ(score×weight)/100）。
+    scoring: Optional[dict[str, Any]] = None
 
 
 class BenchmarkUpdate(BenchmarkCreate):
@@ -1151,16 +1175,71 @@ def _resolve_skill(
     return None, None
 
 
+def _validate_benchmark_scoring(dimensions: list[dict[str, Any]], scoring_cfg: dict[str, Any]) -> None:
+    """维度分制 / 聚合配置校验；不合法抛 422（技术方案：入口层校验）。"""
+    if not dimensions:
+        raise HTTPException(status_code=422, detail="至少需要 1 个评估维度")
+    seen_keys: set[str] = set()
+    for d in dimensions:
+        key = str(d.get("key") or "").strip()
+        name = str(d.get("name") or "").strip()
+        if not name:
+            raise HTTPException(status_code=422, detail="维度名称不能为空")
+        if key and key in seen_keys:
+            raise HTTPException(status_code=422, detail=f"维度 key 重复：{key}")
+        seen_keys.add(key)
+        scale = d.get("scale") or {}
+        stype = scale.get("type", "integer")
+        if stype == "integer":
+            lo, hi = scale.get("min", 1), scale.get("max", 5)
+            try:
+                lo, hi = int(lo), int(hi)
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=422, detail=f"维度「{name}」的 min/max 非整数")
+            if hi <= lo:
+                raise HTTPException(status_code=422, detail=f"维度「{name}」的 max 必须大于 min")
+            values = [lv.get("value") for lv in (scale.get("levels") or [])]
+        elif stype == "enum":
+            values = [str(lv.get("value")) for lv in (scale.get("levels") or [])]
+            if len(values) < 2:
+                raise HTTPException(status_code=422, detail=f"枚举维度「{name}」至少需要 2 个取值")
+        else:
+            raise HTTPException(status_code=422, detail=f"维度「{name}」的分制类型不支持：{stype}")
+        if len(values) != len(set(values)):
+            raise HTTPException(status_code=422, detail=f"维度「{name}」的档位取值重复")
+        thr = d.get("veto_below")
+        if thr is not None and stype == "integer" and not (lo < int(thr) <= hi):
+            raise HTTPException(status_code=422, detail=f"维度「{name}」的一票否决阈值需在 ({lo}, {hi}] 内")
+
+    mode = scoring_cfg.get("mode", "weighted_raw")
+    if mode in ("weighted_raw", "weighted_normalized"):
+        weights = [float(d.get("weight") or 0) for d in dimensions]
+        wsum = round(sum(weights), 2)
+        if wsum not in (0.0, 100.0):
+            raise HTTPException(status_code=422, detail=f"加权模式下维度权重合计需为 100%（当前 {wsum}%）或全部留空表示等权")
+    if mode == "weighted_raw":
+        types = {(d.get("scale") or {}).get("type", "integer") for d in dimensions}
+        ranges = {((d.get("scale") or {}).get("min", 1), (d.get("scale") or {}).get("max", 5)) for d in dimensions}
+        if types != {"integer"} or len(ranges) > 1:
+            raise HTTPException(
+                status_code=422, detail="「加权求和」要求所有维度同为一致的整数分制；混合分制请改用「加权归一」"
+            )
+
+
 def _apply_benchmark_body(benchmark: dict[str, Any], body: BenchmarkCreate) -> None:
     dimensions = body.dimensions or (
         [dict(d) for d in _DIMENSIONS_MULTI] if body.eval_method == "MULTI_DIM" else [dict(d) for d in _DIMENSIONS_GENERAL]
     )
+    scoring_cfg = scoring.normalize_scoring({"scoring": body.scoring or {}})
+    if body.eval_type != "SKILL":
+        _validate_benchmark_scoring(dimensions, scoring_cfg)
     benchmark["name"] = body.name
     benchmark["description"] = body.description
     benchmark["type"] = body.eval_type
     benchmark["eval_method"] = body.eval_method
     benchmark["eval_method_label"] = body.eval_method_label
-    benchmark["config"]["dimensions"] = dimensions
+    benchmark["config"]["dimensions"] = [scoring.normalize_dimension(d) for d in dimensions]
+    benchmark["config"]["scoring"] = scoring_cfg
     if body.eval_type == "SKILL":
         skill, skill_ref = _resolve_skill(body.skill_ref, body.skill)
         if skill:
@@ -1728,6 +1807,34 @@ def export_task(task_id: str) -> Response:
     )
 
 
+def _recompute_adjusted(task: dict[str, Any], adjusted: dict[str, Any]) -> dict[str, Any]:
+    """人工调整维度分后，由后端按基准的聚合配置重算总分（前端不再自算，避免分制不一致时对不上）。"""
+    if task["eval_method"] == "GSB" or not adjusted.get("dimensions"):
+        return adjusted
+    benchmark = next((b for b in _benchmarks if b["id"] == task["benchmark_id"]), None)
+    if not benchmark:
+        return adjusted
+    cfg = scoring.normalize_config(benchmark["config"])
+    dims = cfg["dimensions"]
+    dim_by_key = {d["key"]: d for d in dims}
+    scores_by_key: dict[str, Any] = {}
+    for sd in adjusted["dimensions"]:
+        d = dim_by_key.get(sd.get("key"))
+        if d is not None:
+            scores_by_key[d["key"]] = scoring.coerce_score(d, sd.get("score"))
+    agg = scoring.aggregate(dims, scores_by_key, cfg["scoring"])
+    out = dict(adjusted)
+    out["total"] = agg["total"]
+    out["total_ratio"] = agg["total_ratio"]
+    if agg["grade_label"]:
+        out["grade_label"] = agg["grade_label"]
+    if agg["vetoed"]:
+        out["vetoed"] = agg["vetoed"]
+    else:
+        out.pop("vetoed", None)
+    return out
+
+
 @app.put("/api/tasks/{task_id}/review")
 def review_task(task_id: str, body: ReviewUpdate) -> dict[str, Any]:
     task = _find_task(task_id)
@@ -1738,7 +1845,7 @@ def review_task(task_id: str, body: ReviewUpdate) -> dict[str, Any]:
         if r["row_index"] == body.row_index:
             r["review_status"] = body.review_status
             if body.adjusted_scores is not None:
-                r["adjusted_scores"] = body.adjusted_scores
+                r["adjusted_scores"] = _recompute_adjusted(task, body.adjusted_scores)
             r["review_comment"] = body.review_comment
             found = True
             break

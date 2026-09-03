@@ -45,13 +45,48 @@ const BASE_METHOD_OPTIONS = [
   { mechanism: "GSB", label: "GSB 对比" },
 ];
 
-// 全平台统一默认维度：相关性 / 全面性 / 准确性 / 可读性 / 时效性，各 20%
+// ---- 维度分制（见 scoring.py / 多维度评估基准优化设计.md）----
+
+// 整数区间 [min,max] → 生成每档 {value,label,criteria}
+function makeIntLevels(min, max, labels = {}) {
+  const out = [];
+  for (let v = max; v >= min; v--) out.push({ value: v, label: labels[v] || "", criteria: "" });
+  return out;
+}
+
+const FIVE_LEVEL_LABELS = { 5: "优秀", 4: "良好", 3: "一般", 2: "较差", 1: "很差" };
+
+// 「套用模板」下拉项
+const SCALE_TEMPLATES = [
+  { key: "int_1_5", label: "五档制（1~5）", scale: () => ({ type: "integer", min: 1, max: 5, levels: makeIntLevels(1, 5, FIVE_LEVEL_LABELS) }) },
+  { key: "int_0_3", label: "四档制（0~3，博文总结）", scale: () => ({ type: "integer", min: 0, max: 3, levels: makeIntLevels(0, 3, { 3: "优", 2: "合格", 1: "不可用", 0: "灾难" }) }) },
+  { key: "int_0_10", label: "十分制（0~10）", scale: () => ({ type: "integer", min: 0, max: 10, levels: makeIntLevels(0, 10) }) },
+  { key: "enum_gsb", label: "GSB（G/S/B）", scale: () => ({ type: "enum", levels: [
+    { value: "G", label: "更好", criteria: "", score: 5 },
+    { value: "S", label: "持平", criteria: "", score: 3 },
+    { value: "B", label: "更差", criteria: "", score: 1 },
+  ] }) },
+  { key: "enum_bool", label: "二值（通过/不通过）", scale: () => ({ type: "enum", levels: [
+    { value: "通过", label: "", criteria: "", score: 1 },
+    { value: "不通过", label: "", criteria: "", score: 0 },
+  ] }) },
+];
+
+const DEFAULT_DIM_SCALE = () => ({ type: "integer", min: 1, max: 5, levels: makeIntLevels(1, 5, FIVE_LEVEL_LABELS) });
+
+// 全平台统一默认维度：相关性 / 全面性 / 准确性 / 可读性 / 时效性，各 20%，1~5 五档
 const DEFAULT_DIMS = [
   { key: "relevance", name: "相关性", weight: 20 },
   { key: "comprehensiveness", name: "全面性", weight: 20 },
   { key: "accuracy", name: "准确性", weight: 20 },
   { key: "readability", name: "可读性", weight: 20 },
   { key: "timeliness", name: "时效性", weight: 20 },
+].map((d) => ({ ...d, description: "", scale: DEFAULT_DIM_SCALE(), veto_below: null }));
+
+const SCORING_MODE_OPTIONS = [
+  { value: "weighted_raw", label: "加权求和（同分制）", hint: "Σ(分×权重)/100，要求所有维度同为一致的整数分制" },
+  { value: "weighted_normalized", label: "加权归一（混合分制）", hint: "各维度先归一到 0~1 再加权，支持不同分制混用" },
+  { value: "threshold", label: "阈值分档", hint: "在加权归一得分率基础上，按阈值表判定档位" },
 ];
 
 const DEFAULT_PROMPT =
@@ -471,7 +506,12 @@ function CreateTaskModal({
                     <span className="text-secondary">
                       {d.name}（{d.weight}%）
                     </span>
-                    <span className="text-tertiary">{d.criteria}</span>
+                    <span className="text-tertiary">
+                      {d.scale?.type === "enum"
+                        ? (d.scale.levels || []).map((lv) => lv.value).join("/")
+                        : `${d.scale?.min ?? 1}~${d.scale?.max ?? 5}`}
+                      {d.description || d.criteria ? ` · ${d.description || d.criteria}` : ""}
+                    </span>
                   </div>
                 ))}
               </div>
@@ -977,6 +1017,8 @@ function ResultScores({ item }) {
     <div className="inline gap-8 wrap">
       {adjusted ? <Badge tone="brand">已调整</Badge> : null}
       <Score value={scores.total} />
+      {scores.grade_label ? <Badge tone="outline">{scores.grade_label}</Badge> : null}
+      {scores.vetoed ? <Badge tone="warning" dot>否决·{scores.vetoed}</Badge> : null}
       {(scores.dimensions || []).map((d) => (
         <span className="text-tertiary" style={{ fontSize: 12 }} key={d.key}>
           {d.name} {d.score}
@@ -1006,9 +1048,19 @@ function ReviewAdjustModal({ open, row, benchmark, saving, onClose, onSubmit }) 
 
   if (!open || !row) return null;
 
+  const benchDims = benchmark?.config?.dimensions || [];
+  const scaleFor = (key) => (benchDims.find((x) => x.key === key)?.scale) || { type: "integer", min: 1, max: 5, levels: [] };
+
   function setScore(i, value) {
-    const v = Math.max(1, Math.min(5, Number(value) || 1));
-    setDimScores((prev) => prev.map((d, idx) => (idx === i ? { ...d, score: v } : d)));
+    setDimScores((prev) =>
+      prev.map((d, idx) => {
+        if (idx !== i) return d;
+        const sc = scaleFor(d.key);
+        if (sc.type === "enum") return { ...d, score: value };
+        const v = Math.max(sc.min ?? 1, Math.min(sc.max ?? 5, Number(value) || (sc.min ?? 1)));
+        return { ...d, score: v };
+      })
+    );
   }
 
   function submit() {
@@ -1016,9 +1068,8 @@ function ReviewAdjustModal({ open, row, benchmark, saving, onClose, onSubmit }) 
       onSubmit({ judgment }, comment);
       return;
     }
-    const dims = benchmark?.config?.dimensions || [];
-    const total = Math.round(dimScores.reduce((s, d, i) => s + d.score * (dims[i]?.weight || 0), 0)) / 100;
-    onSubmit({ dimensions: dimScores, total }, comment);
+    // 总分由后端按基准聚合配置重算，这里只回传维度分
+    onSubmit({ dimensions: dimScores }, comment);
   }
 
   return (
@@ -1049,12 +1100,31 @@ function ReviewAdjustModal({ open, row, benchmark, saving, onClose, onSubmit }) 
         </Field>
       ) : (
         <div className="dim-list">
-          {dimScores.map((d, i) => (
-            <div className="inline" key={d.key} style={{ justifyContent: "space-between" }}>
-              <span className="text-secondary">{d.name}</span>
-              <input className="input" style={{ width: 80 }} type="number" min="1" max="5" value={d.score} onChange={(e) => setScore(i, e.target.value)} />
-            </div>
-          ))}
+          {dimScores.map((d, i) => {
+            const sc = scaleFor(d.key);
+            return (
+              <div className="inline" key={d.key} style={{ justifyContent: "space-between" }}>
+                <span className="text-secondary">{d.name}</span>
+                {sc.type === "enum" ? (
+                  <select className="select" style={{ width: 120 }} value={d.score} onChange={(e) => setScore(i, e.target.value)}>
+                    {(sc.levels || []).map((lv) => (
+                      <option key={lv.value} value={lv.value}>{lv.value}{lv.label ? `（${lv.label}）` : ""}</option>
+                    ))}
+                  </select>
+                ) : (
+                  <input
+                    className="input"
+                    style={{ width: 80 }}
+                    type="number"
+                    min={sc.min ?? 1}
+                    max={sc.max ?? 5}
+                    value={d.score}
+                    onChange={(e) => setScore(i, e.target.value)}
+                  />
+                )}
+              </div>
+            );
+          })}
         </div>
       )}
       <Field label="复核说明" hint="非必填，说明调整原因">
@@ -2157,6 +2227,10 @@ function CreateBenchmarkModal({ open, benchmark, onClose, onSaved, methodOptions
   const [newMethodName, setNewMethodName] = useState("");
   const [newMethodMechanism, setNewMethodMechanism] = useState("MULTI_DIM");
   const [dims, setDims] = useState(DEFAULT_DIMS);
+  const [scoringMode, setScoringMode] = useState("weighted_raw");
+  const [displayScale, setDisplayScale] = useState(5);
+  const [lowScoreRatio, setLowScoreRatio] = useState(0.6);
+  const [gradeThresholds, setGradeThresholds] = useState([]);
   const [promptTemplate, setPromptTemplate] = useState(DEFAULT_PROMPT);
   const [confidenceEnabled, setConfidenceEnabled] = useState(true);
   const [gsbRules, setGsbRules] = useState(DEFAULT_GSB_RULES);
@@ -2193,7 +2267,19 @@ function CreateBenchmarkModal({ open, benchmark, onClose, onSaved, methodOptions
       setSkillInfo(benchmark.config?.skill || null);
       setMechanism(benchmark.eval_method);
       setMethodLabel(benchmark.eval_method_display || benchmark.eval_method_label || BASE_METHOD_OPTIONS.find((o) => o.mechanism === benchmark.eval_method)?.label);
-      setDims((benchmark.config?.dimensions || DEFAULT_DIMS).map((d) => ({ key: d.key, name: d.name, weight: d.weight })));
+      setDims((benchmark.config?.dimensions || DEFAULT_DIMS).map((d) => ({
+        key: d.key,
+        name: d.name,
+        weight: d.weight,
+        description: d.description || d.criteria || "",
+        scale: d.scale && d.scale.type ? d.scale : DEFAULT_DIM_SCALE(),
+        veto_below: d.veto_below ?? null,
+      })));
+      const sc = benchmark.config?.scoring || {};
+      setScoringMode(sc.mode || "weighted_raw");
+      setDisplayScale(sc.display_scale || 5);
+      setLowScoreRatio(sc.low_score_ratio ?? 0.6);
+      setGradeThresholds(sc.grade_thresholds || []);
       setPromptTemplate(benchmark.config?.prompt_template || DEFAULT_PROMPT);
       setConfidenceEnabled(benchmark.config?.confidence_enabled ?? true);
       setGsbRules(benchmark.config?.gsb?.rules || DEFAULT_GSB_RULES);
@@ -2208,6 +2294,10 @@ function CreateBenchmarkModal({ open, benchmark, onClose, onSaved, methodOptions
       setMechanism("MULTI_DIM");
       setMethodLabel(BASE_METHOD_OPTIONS[0].label);
       setDims(DEFAULT_DIMS);
+      setScoringMode("weighted_raw");
+      setDisplayScale(5);
+      setLowScoreRatio(0.6);
+      setGradeThresholds([]);
       setPromptTemplate(DEFAULT_PROMPT);
       setConfidenceEnabled(true);
       setGsbRules(DEFAULT_GSB_RULES);
@@ -2254,17 +2344,45 @@ function CreateBenchmarkModal({ open, benchmark, onClose, onSaved, methodOptions
     setNewMethodName("");
   }
 
+  function setDimField(index, patch) {
+    setDims((prev) => prev.map((d, i) => (i === index ? { ...d, ...patch } : d)));
+  }
   function setWeight(index, value) {
-    setDims((prev) => prev.map((d, i) => (i === index ? { ...d, weight: Number(value) || 0 } : d)));
+    setDimField(index, { weight: Number(value) || 0 });
   }
   function addDim() {
-    setDims((prev) => [...prev, { key: `dim_${prev.length + 1}`, name: "", weight: 0 }]);
+    setDims((prev) => [...prev, { key: `dim_${prev.length + 1}`, name: "", weight: 0, description: "", scale: DEFAULT_DIM_SCALE(), veto_below: null }]);
   }
   function removeDim(index) {
     setDims((prev) => prev.filter((_, i) => i !== index));
   }
+  function applyScaleTemplate(index, tplKey) {
+    const tpl = SCALE_TEMPLATES.find((t) => t.key === tplKey);
+    if (tpl) setDimField(index, { scale: tpl.scale(), veto_below: null });
+  }
+  function setIntRange(index, key, value) {
+    setDims((prev) =>
+      prev.map((d, i) => {
+        if (i !== index) return d;
+        const min = key === "min" ? Number(value) : d.scale.min;
+        const max = key === "max" ? Number(value) : d.scale.max;
+        if (!Number.isFinite(min) || !Number.isFinite(max) || max <= min) return { ...d, scale: { ...d.scale, [key]: Number(value) } };
+        const oldByVal = Object.fromEntries((d.scale.levels || []).map((lv) => [lv.value, lv]));
+        const levels = [];
+        for (let v = max; v >= min; v--) levels.push(oldByVal[v] || { value: v, label: "", criteria: "" });
+        return { ...d, scale: { type: "integer", min, max, levels } };
+      })
+    );
+  }
+  function setLevelField(index, lvIdx, patch) {
+    setDims((prev) =>
+      prev.map((d, i) => (i === index ? { ...d, scale: { ...d.scale, levels: d.scale.levels.map((lv, j) => (j === lvIdx ? { ...lv, ...patch } : lv)) } } : d))
+    );
+  }
 
+  const isWeighted = scoringMode === "weighted_raw" || scoringMode === "weighted_normalized";
   const totalWeight = dims.reduce((s, d) => s + (Number(d.weight) || 0), 0);
+  const weightOk = !isWeighted || totalWeight === 100 || totalWeight === 0;
 
   function next() {
     if (!name.trim()) {
@@ -2276,9 +2394,23 @@ function CreateBenchmarkModal({ open, benchmark, onClose, onSaved, methodOptions
   }
 
   async function submit() {
-    if (mechanism === "MULTI_DIM" && totalWeight !== 100) {
-      setMessage(`维度权重合计需为 100%（当前 ${totalWeight}%）`);
-      return;
+    if (evalType !== "SKILL" && mechanism === "MULTI_DIM") {
+      if (!weightOk) {
+        setMessage(`加权模式下维度权重合计需为 100%（当前 ${totalWeight}%）或全部留空表示等权`);
+        return;
+      }
+      const badDim = dims.find((d) => !d.name.trim());
+      if (badDim) {
+        setMessage("每个维度都需要填写名称");
+        return;
+      }
+      if (scoringMode === "weighted_raw") {
+        const ranges = new Set(dims.map((d) => (d.scale.type === "integer" ? `${d.scale.min}-${d.scale.max}` : "enum")));
+        if (ranges.size > 1 || dims.some((d) => d.scale.type !== "integer")) {
+          setMessage("「加权求和」要求所有维度同为一致的整数分制；混合分制请改用「加权归一」");
+          return;
+        }
+      }
     }
     if (evalType === "SKILL") {
       if (skillSource === "builtin" && !builtinId) {
@@ -2302,7 +2434,26 @@ function CreateBenchmarkModal({ open, benchmark, onClose, onSaved, methodOptions
       eval_type: evalType,
       eval_method: mechanism,
       eval_method_label: methodLabel === defaultLabel ? "" : methodLabel,
-      dimensions: mechanism === "MULTI_DIM" ? dims.map(({ key, name: dName, weight }) => ({ key, name: dName || key, weight: Number(weight) || 0 })) : [],
+      dimensions:
+        mechanism === "MULTI_DIM"
+          ? dims.map(({ key, name: dName, weight, description, scale, veto_below }) => ({
+              key: key || undefined,
+              name: dName || key,
+              weight: Number(weight) || 0,
+              description: description || "",
+              scale,
+              veto_below: veto_below === "" || veto_below == null ? null : Number(veto_below),
+            }))
+          : [],
+      scoring:
+        mechanism === "MULTI_DIM"
+          ? {
+              mode: scoringMode,
+              display_scale: Number(displayScale) || 5,
+              low_score_ratio: Number(lowScoreRatio) || 0.6,
+              grade_thresholds: scoringMode === "threshold" ? gradeThresholds : [],
+            }
+          : undefined,
       prompt_template: evalType === "PROMPT" ? promptTemplate : undefined,
       skill: evalType === "SKILL" && skillSource === "upload" ? skillInfo : undefined,
       skill_ref:
@@ -2516,27 +2667,173 @@ function CreateBenchmarkModal({ open, benchmark, onClose, onSaved, methodOptions
           </label>
 
           {mechanism === "MULTI_DIM" ? (
-            <Field label="维度与权重" required hint={`权重合计：${totalWeight}%（需等于 100%）`}>
-              <div className="dim-list">
-                {dims.map((d, i) => (
-                  <div className="inline" key={i} style={{ gap: 8 }}>
+            <>
+              <Field
+                label="评估维度"
+                required
+                hint={isWeighted ? `权重合计：${totalWeight}%（需等于 100%，或全部留空表示等权）` : "每个维度定义独立的分制与各档评分标准"}
+              >
+                <div className="dim-card-list">
+                  {dims.map((d, i) => (
+                    <div className="dim-card" key={i}>
+                      <div className="inline" style={{ gap: 8, alignItems: "center" }}>
+                        <input
+                          className="input"
+                          style={{ flex: 1 }}
+                          value={d.name}
+                          placeholder="维度名称"
+                          onChange={(e) => setDimField(i, { name: e.target.value })}
+                        />
+                        {isWeighted ? (
+                          <>
+                            <input className="input" style={{ width: 72 }} type="number" value={d.weight} onChange={(e) => setWeight(i, e.target.value)} />
+                            <span className="text-tertiary">%</span>
+                          </>
+                        ) : null}
+                        <IconButton icon="trash" label="删除维度" onClick={() => removeDim(i)} />
+                      </div>
+                      <input
+                        className="input mt-8"
+                        value={d.description}
+                        placeholder="维度说明（给裁判员的总述，选填）"
+                        onChange={(e) => setDimField(i, { description: e.target.value })}
+                      />
+                      <div className="inline mt-8" style={{ gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                        <select
+                          className="select"
+                          style={{ width: 130 }}
+                          value={d.scale.type}
+                          onChange={(e) =>
+                            setDimField(i, {
+                              scale: e.target.value === "enum" ? SCALE_TEMPLATES.find((t) => t.key === "enum_gsb").scale() : DEFAULT_DIM_SCALE(),
+                              veto_below: null,
+                            })
+                          }
+                        >
+                          <option value="integer">整数区间</option>
+                          <option value="enum">枚举</option>
+                        </select>
+                        {d.scale.type === "integer" ? (
+                          <>
+                            <span className="text-tertiary">min</span>
+                            <input className="input" style={{ width: 60 }} type="number" value={d.scale.min} onChange={(e) => setIntRange(i, "min", e.target.value)} />
+                            <span className="text-tertiary">max</span>
+                            <input className="input" style={{ width: 60 }} type="number" value={d.scale.max} onChange={(e) => setIntRange(i, "max", e.target.value)} />
+                          </>
+                        ) : null}
+                        <select className="select" style={{ width: 190 }} value="" onChange={(e) => e.target.value && applyScaleTemplate(i, e.target.value)}>
+                          <option value="">套用模板…</option>
+                          {SCALE_TEMPLATES.map((t) => (
+                            <option key={t.key} value={t.key}>{t.label}</option>
+                          ))}
+                        </select>
+                      </div>
+                      {d.scale.type === "integer" ? (
+                        <label className="inline mt-8" style={{ gap: 6, fontSize: 12, color: "var(--text-secondary)" }}>
+                          <input
+                            type="checkbox"
+                            checked={d.veto_below != null}
+                            onChange={(e) => setDimField(i, { veto_below: e.target.checked ? d.scale.min + 1 : null })}
+                          />
+                          一票否决：得分低于
+                          <input
+                            className="input"
+                            style={{ width: 56 }}
+                            type="number"
+                            disabled={d.veto_below == null}
+                            value={d.veto_below ?? ""}
+                            onChange={(e) => setDimField(i, { veto_below: Number(e.target.value) })}
+                          />
+                          时整体判最低档
+                        </label>
+                      ) : null}
+                      <div className="dim-levels mt-8">
+                        {d.scale.levels.map((lv, j) => (
+                          <div className="inline" key={j} style={{ gap: 6, alignItems: "center" }}>
+                            <span className="mono" style={{ width: 28, textAlign: "right" }}>{String(lv.value)}</span>
+                            <input
+                              className="input"
+                              style={{ width: 96 }}
+                              value={lv.label}
+                              placeholder="档位名"
+                              onChange={(e) => setLevelField(i, j, { label: e.target.value })}
+                            />
+                            <input
+                              className="input"
+                              style={{ flex: 1 }}
+                              value={lv.criteria}
+                              placeholder="该档评分标准"
+                              onChange={(e) => setLevelField(i, j, { criteria: e.target.value })}
+                            />
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                  <Button size="sm" icon="plus" onClick={addDim}>
+                    添加维度
+                  </Button>
+                </div>
+              </Field>
+
+              <Field label="聚合方式" required hint={SCORING_MODE_OPTIONS.find((o) => o.value === scoringMode)?.hint}>
+                <select className="select" value={scoringMode} onChange={(e) => setScoringMode(e.target.value)}>
+                  {SCORING_MODE_OPTIONS.map((o) => (
+                    <option key={o.value} value={o.value}>{o.label}</option>
+                  ))}
+                </select>
+                <div className="inline mt-8" style={{ gap: 16, flexWrap: "wrap" }}>
+                  <label className="inline" style={{ gap: 6, fontSize: 13 }}>
+                    展示满分
+                    <select className="select" style={{ width: 110 }} value={displayScale} onChange={(e) => setDisplayScale(Number(e.target.value))}>
+                      <option value={5}>5 分</option>
+                      <option value={100}>100 分</option>
+                    </select>
+                  </label>
+                  <label className="inline" style={{ gap: 6, fontSize: 13 }}>
+                    低分阈值（得分率）
                     <input
                       className="input"
-                      style={{ flex: 1 }}
-                      value={d.name}
-                      placeholder="维度名称"
-                      onChange={(e) => setDims((prev) => prev.map((x, j) => (j === i ? { ...x, name: e.target.value } : x)))}
+                      style={{ width: 72 }}
+                      type="number"
+                      step="0.05"
+                      min="0"
+                      max="1"
+                      value={lowScoreRatio}
+                      onChange={(e) => setLowScoreRatio(Number(e.target.value))}
                     />
-                    <input className="input" style={{ width: 90 }} type="number" value={d.weight} onChange={(e) => setWeight(i, e.target.value)} />
-                    <span className="text-tertiary">%</span>
-                    <IconButton icon="trash" label="删除维度" onClick={() => removeDim(i)} />
+                  </label>
+                </div>
+                {scoringMode === "threshold" ? (
+                  <div className="dim-levels mt-8">
+                    {gradeThresholds.map((t, i) => (
+                      <div className="inline" key={i} style={{ gap: 6, alignItems: "center" }}>
+                        <span className="text-tertiary">得分率 ≥</span>
+                        <input
+                          className="input"
+                          style={{ width: 72 }}
+                          type="number"
+                          step="0.05"
+                          value={t.min_ratio}
+                          onChange={(e) => setGradeThresholds((prev) => prev.map((x, j) => (j === i ? { ...x, min_ratio: Number(e.target.value) } : x)))}
+                        />
+                        <input
+                          className="input"
+                          style={{ flex: 1 }}
+                          value={t.label}
+                          placeholder="档位名，如「3档 · 极致提效」"
+                          onChange={(e) => setGradeThresholds((prev) => prev.map((x, j) => (j === i ? { ...x, label: e.target.value } : x)))}
+                        />
+                        <IconButton icon="trash" label="删除档位" onClick={() => setGradeThresholds((prev) => prev.filter((_, j) => j !== i))} />
+                      </div>
+                    ))}
+                    <Button size="sm" icon="plus" onClick={() => setGradeThresholds((prev) => [...prev, { min_ratio: 0, label: "" }])}>
+                      添加档位
+                    </Button>
                   </div>
-                ))}
-                <Button size="sm" icon="plus" onClick={addDim}>
-                  添加维度
-                </Button>
-              </div>
-            </Field>
+                ) : null}
+              </Field>
+            </>
           ) : (
             <>
               <div className="banner">
@@ -2744,6 +3041,8 @@ export function BenchmarkDetailPage({ id, navigate }) {
   const dims = b.config?.dimensions || [];
   const gsb = b.config?.gsb;
   const skill = b.config?.skill;
+  const scoringCfg = b.config?.scoring || {};
+  const scoringModeLabel = (SCORING_MODE_OPTIONS.find((o) => o.value === scoringCfg.mode) || {}).label || "加权求和（同分制）";
 
   async function handleCopy() {
     try {
@@ -2807,18 +3106,50 @@ export function BenchmarkDetailPage({ id, navigate }) {
 
       {dims.length > 0 ? (
         <section className="card">
-          <h3 className="card-title">维度与权重</h3>
-          <div className="dim-list mt-16">
-            {dims.map((d) => (
-              <div className="dim-row" key={d.key}>
-                <span className="dim-name">{d.name}</span>
-                <div className="dim-track">
-                  <div className="dim-fill" style={{ width: `${d.weight}%` }} />
+          <h3 className="card-title">评估维度</h3>
+          <p className="card-sub mt-8">
+            聚合方式：{scoringModeLabel}
+            {scoringCfg.display_scale ? ` · 展示满分 ${scoringCfg.display_scale}` : ""}
+            {scoringCfg.low_score_ratio != null ? ` · 低分阈值得分率 ${Math.round(scoringCfg.low_score_ratio * 100)}%` : ""}
+          </p>
+          <div className="dim-card-list mt-16">
+            {dims.map((d) => {
+              const sc = d.scale || {};
+              const domain = sc.type === "enum" ? (sc.levels || []).map((lv) => lv.value).join(" / ") : `${sc.min ?? 1}~${sc.max ?? 5} 整数`;
+              return (
+                <div className="dim-card" key={d.key}>
+                  <div className="inline" style={{ justifyContent: "space-between" }}>
+                    <span style={{ fontWeight: 500 }}>{d.name}</span>
+                    <span className="text-tertiary" style={{ fontSize: 12 }}>
+                      权重 {d.weight}% · 取值 {domain}
+                      {d.veto_below != null ? ` · 一票否决<${d.veto_below}` : ""}
+                    </span>
+                  </div>
+                  {d.description ? <p className="card-sub mt-8">{d.description}</p> : null}
+                  {(sc.levels || []).some((lv) => lv.criteria || lv.label) ? (
+                    <div className="dim-levels mt-8">
+                      {(sc.levels || []).map((lv, j) => (
+                        <div key={j} style={{ fontSize: 12 }}>
+                          <span className="mono">{String(lv.value)}</span>
+                          {lv.label ? <span className="text-secondary"> {lv.label}</span> : null}
+                          {lv.criteria ? <span className="text-tertiary">：{lv.criteria}</span> : null}
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
                 </div>
-                <span className="dim-score">{d.weight}%</span>
-              </div>
-            ))}
+              );
+            })}
           </div>
+          {(scoringCfg.grade_thresholds || []).length > 0 ? (
+            <div className="dim-levels mt-16">
+              {scoringCfg.grade_thresholds.map((t, i) => (
+                <div key={i} style={{ fontSize: 12 }}>
+                  <span className="text-tertiary">得分率 ≥ {t.min_ratio} →</span> <span className="text-secondary">{t.label}</span>
+                </div>
+              ))}
+            </div>
+          ) : null}
         </section>
       ) : null}
 
