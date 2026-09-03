@@ -11,12 +11,12 @@ import json
 import logging
 from typing import Any
 
-from . import config, llm
+from . import config, llm, scoring
 
 logger = logging.getLogger(__name__)
 
-LOW_SCORE_THRESHOLD = 3.0  # evaluation-report SKILL.md 默认低分阈值
-DIM_LOW_MARK = 2  # 维度 score <= 2 记为该维度低分
+# 低分阈值改为「得分率」，逐基准可配（benchmark.config.scoring.low_score_ratio，默认 0.6）。
+# 旧任务结果无 total_ratio 时按 1~5 量纲折算，见 build_report。
 
 # 人工复核状态的中文展示标签（与前端 api.js 的 REVIEW_LABELS / RESULT_REVIEW_LABELS 一致）。
 # 定义在这里而非 main.py：report.py 是唯一消费方，放这里可去掉 report→main 的延迟 import。
@@ -182,45 +182,73 @@ def build_report(task: dict[str, Any], results: list[dict[str, Any]], benchmark:
     if eval_method == "INTENT":
         return _build_intent_report(task, results, total, use_llm)
 
-    dims = benchmark["config"]["dimensions"]
+    cfg = scoring.normalize_config(benchmark["config"])
+    dims = cfg["dimensions"]
+    dim_by_key = {d["key"]: d for d in dims}
+    low_ratio_thr = cfg["scoring"].get("low_score_ratio", 0.6)
     dim_stats = []
     for d in dims:
-        vals, lows = [], 0
+        vals, ratios, lows = [], [], 0
         for r in results:
             for sd in _effective_scores(r).get("dimensions", []):
-                if sd.get("key") == d["key"]:
-                    vals.append(sd["score"])
-                    lows += 1 if sd["score"] <= DIM_LOW_MARK else 0
+                if sd.get("key") != d["key"]:
+                    continue
+                rt = scoring.ratio_of(d, sd["score"])
+                num = scoring.numeric_score(d, sd["score"])
+                if num is not None:
+                    vals.append(num)
+                if rt is not None:
+                    ratios.append(rt)
+                    lows += 1 if rt < low_ratio_thr else 0
         avg = round(sum(vals) / len(vals), 2) if vals else 0.0
+        avg_ratio = round(sum(ratios) / len(ratios), 3) if ratios else 0.0
+        scale = scoring.scale_of(d)
         dim_stats.append(
             {
                 "key": d["key"],
                 "name": d.get("name", d["key"]),
                 "avg": avg,
+                "avg_ratio": avg_ratio,
+                "scale_max": scale["max"] if scale["type"] == "integer" else None,
                 "weight": d.get("weight", 0),
                 "low_count": lows,
                 "low_ratio": round(lows / total * 100, 1),
             }
         )
-    totals = [_effective_scores(r)["total"] for r in results]
+
+    def _row_ratio(r: dict[str, Any]) -> float:
+        s = _effective_scores(r)
+        if s.get("total_ratio") is not None:
+            return float(s["total_ratio"])
+        return float(s.get("total", 0)) / 5.0  # 旧结果按 1~5 量纲折算
+
+    totals = [_effective_scores(r).get("total", 0) for r in results]
+    row_ratios = [_row_ratio(r) for r in results]
     confs = [r["confidence"] for r in results if r.get("confidence") is not None]
-    low_results = [r for r in results if _effective_scores(r)["total"] < LOW_SCORE_THRESHOLD]
+    low_results = [r for r, rr in zip(results, row_ratios) if rr < low_ratio_thr]
     badcases = [{"query": r["query"], "content": r["content"], "reason": r["reason"]} for r in low_results]
-    weakest = min(dim_stats, key=lambda x: x["avg"]) if dim_stats else None
-    strongest = max(dim_stats, key=lambda x: x["avg"]) if dim_stats else None
+    weakest = min(dim_stats, key=lambda x: x["avg_ratio"]) if dim_stats else None
+    strongest = max(dim_stats, key=lambda x: x["avg_ratio"]) if dim_stats else None
     error_cases = _build_error_cases(badcases, task["judge_model"], use_llm)
+    # 总分分布：按归一得分率分 5 档（0~20% … 80~100%），跨分制通用
+    bands = ["0-20%", "20-40%", "40-60%", "60-80%", "80-100%"]
+    dist = {b: 0 for b in bands}
+    for rr in row_ratios:
+        dist[bands[min(4, int(rr * 5))]] += 1
     content = {
         "summary": {
             "total": total,
             "avg_total": round(sum(totals) / len(totals), 2),
+            "avg_ratio": round(sum(row_ratios) / len(row_ratios), 3),
             "avg_confidence": round(sum(confs) / len(confs), 2) if confs else None,
             "low_count": len(low_results),
             "low_ratio": round(len(low_results) / total * 100, 1),
+            "low_score_ratio_threshold": low_ratio_thr,
             "weakest_dim": weakest["name"] if weakest else None,
             "strongest_dim": strongest["name"] if strongest else None,
         },
         "dimensions": dim_stats,
-        "distribution": {str(s): sum(1 for v in totals if round(v) == s) for s in range(1, 6)},
+        "distribution": dist,
         "error_cases": error_cases,
         "suggestions": _suggestions(eval_method, weakest["name"] if weakest else None, error_cases["typical"]),
     }
@@ -594,21 +622,24 @@ def report_to_markdown(task: dict[str, Any], report: dict[str, Any], results: li
             "",
         ]
     else:
+        low_pct = round(summary.get("low_score_ratio_threshold", 0.6) * 100)
         L += [
             f"- **规模与低分**：总样本 {summary.get('total', 0)}，低分样本 {summary.get('low_count', 0)} 个、"
-            f"占比 {summary.get('low_ratio', 0)}%（总分 < {LOW_SCORE_THRESHOLD}）。",
+            f"占比 {summary.get('low_ratio', 0)}%（得分率 < {low_pct}%）。",
             f"- **核心结论**：最弱维度为「{summary.get('weakest_dim', '—')}」，最强维度为「{summary.get('strongest_dim', '—')}」；"
             "问题贯穿需求理解—物料获取—内容整合—结果呈现全链路。",
-            f"- **平均总分**：{summary.get('avg_total', '—')}　**平均置信度**：{summary.get('avg_confidence', '—')}",
+            f"- **平均总分**：{summary.get('avg_total', '—')}（平均得分率 {round(summary.get('avg_ratio', 0) * 100, 1)}%）"
+            f"　**平均置信度**：{summary.get('avg_confidence', '—')}",
             "",
             "## 三、分维度问题分析",
             "",
-            "| 维度 | 平均分 | 权重 | 低分数(≤2) | 低分占比 |",
-            "| --- | --- | --- | --- | --- |",
+            "| 维度 | 平均分 | 得分率 | 权重 | 低分数 | 低分占比 |",
+            "| --- | --- | --- | --- | --- | --- |",
         ]
         for d in content.get("dimensions", []):
+            avg_disp = f"{d['avg']}/{d['scale_max']}" if d.get("scale_max") else str(d["avg"])
             L.append(
-                f"| {d['name']} | {d['avg']} | {d['weight']}% | {d['low_count']} | {d['low_ratio']}% |"
+                f"| {d['name']} | {avg_disp} | {round(d.get('avg_ratio', 0) * 100, 1)}% | {d['weight']}% | {d['low_count']} | {d['low_ratio']}% |"
             )
         L.append("")
 

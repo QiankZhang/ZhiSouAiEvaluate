@@ -971,6 +971,27 @@ a {
   gap: 8px;
 }
 
+.dim-card-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.dim-card {
+  border: 1px solid var(--border-subtle, var(--border));
+  border-radius: 8px;
+  padding: 12px;
+  background: var(--bg-surface);
+}
+
+.dim-levels {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-left: 8px;
+  border-left: 2px solid var(--border-subtle, var(--border));
+}
+
 .dim-row {
   display: grid;
   grid-template-columns: 90px 1fr 56px;
