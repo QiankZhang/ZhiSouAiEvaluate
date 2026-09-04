@@ -1,0 +1,8 @@
+# 博文数据集（mid → 原始物料）：qinglong 流水线的依赖。
+# 单独一份、由 Dockerfile 额外安装，不并入 site/requirements.txt —— 后端主体刻意只用标准库 + FastAPI。
+# 版本对齐开发机实测环境（Python 3.13），在镜像的 Python 3.11 上同样有 manylinux 轮子。
+aiohttp==3.11.10
+redis==5.2.1
+pandas==2.2.3
+tqdm==4.67.1
+requests==2.32.3
