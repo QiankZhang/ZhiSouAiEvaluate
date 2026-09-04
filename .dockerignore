@@ -32,3 +32,8 @@ site/backend/reports
 **/*.db
 **/*.db-wal
 **/*.db-shm
+
+# qinglong 运行时产物（源码进镜像，日志/中间产物不进）
+qinglong/logs
+qinglong/data
+qinglong/results

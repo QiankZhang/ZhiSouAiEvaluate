@@ -99,7 +99,11 @@ DB_PATH = Path(_get("DB_PATH", str(_BACKEND_DIR / "data" / "app.db")))
 # 后端把 mid 列表写临时 txt，子进程调 qinglong 的 bin.make_data / bin.process_data，
 # 回读逐行追加的 jsonl 感知进度。qinglong 依赖新浪内网（hbase/redis/内容接口），
 # 与后端刻意精简的依赖隔离在各自的 Python 环境里。
-WEIBO_QINGLONG_DIR = _get("WEIBO_QINGLONG_DIR", str(_REPO_ROOT.parent / "qinglong"))
+_vendored_qinglong = _REPO_ROOT / "qinglong"
+WEIBO_QINGLONG_DIR = _get(
+    "WEIBO_QINGLONG_DIR",
+    str(_vendored_qinglong if _vendored_qinglong.is_dir() else _REPO_ROOT.parent / "qinglong"),
+)
 WEIBO_QINGLONG_PYTHON = _get("WEIBO_QINGLONG_PYTHON", "python3")
 WEIBO_QINGLONG_BASE_PATH = _get("WEIBO_QINGLONG_BASE_PATH", "")  # 传给 qinglong 的 QINGLONG_BASE_PATH，空则用其自带默认
 WEIBO_CONVERT_CONCURRENCY = max(1, _get_int("WEIBO_CONVERT_CONCURRENCY", 10))

@@ -22,11 +22,18 @@ WORKDIR /app
 
 # 先装依赖，利用镜像层缓存（requirements 不变则跳过重装）
 COPY site/requirements.txt /app/site/requirements.txt
-RUN pip install ${PIP_INDEX_URL:+--index-url $PIP_INDEX_URL} -r /app/site/requirements.txt
+COPY site/deploy/requirements-weibo.txt /app/site/deploy/requirements-weibo.txt
+RUN pip install ${PIP_INDEX_URL:+--index-url $PIP_INDEX_URL} -r /app/site/requirements.txt \
+ && pip install ${PIP_INDEX_URL:+--index-url $PIP_INDEX_URL} -r /app/site/deploy/requirements-weibo.txt
 
 # 应用代码 + 内置技能 + 已构建前端（site/frontend/dist 由 deploy 分支带入）
 COPY site /app/site
 COPY skills /app/skills
+# 博文数据集：qinglong 流水线随镜像发布，后端子进程调用（见 backend/weibo.py）。
+# 依赖新浪内网可达（hbase / redis / 内容接口）——目标机内网满足。
+COPY qinglong /app/qinglong
+ENV WEIBO_QINGLONG_DIR=/app/qinglong \
+    WEIBO_QINGLONG_PYTHON=python3
 
 WORKDIR /app/site
 EXPOSE 8000
