@@ -3,6 +3,9 @@
 > 目标机 = 公司通道机后面的机器，只有 Docker（无 root、无 Python）。
 > 应用以单个 Docker 容器运行：一个容器同时提供前端页面和后端 API。
 > 详细背景见 [DOCKER.md](DOCKER.md)。
+>
+> **`bash ~/zhisou-update.sh` 卡在下载 / pip 连不上 pypi？** 目标机外网不稳，改走镜像中转，见
+> [UPDATE-OFFLINE.md](UPDATE-OFFLINE.md)（开发机 `build-push.sh` 推 Docker Hub → 目标机 `pull-update.sh` 走国内代理拉）。
 
 ## 0. 现状
 
