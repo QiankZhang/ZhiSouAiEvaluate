@@ -109,6 +109,7 @@ export const ANNOTATE_TYPE_LABELS = {
 };
 
 export const MANUAL_STATUS_LABELS = {
+  CONVERTING: "物料转换中",
   ANNOTATING: "标注中",
   COMPLETED: "已完成",
 };
@@ -147,6 +148,7 @@ export const SOURCE_LABELS = {
   UPLOAD: "文件上传",
   SAMPLE: "示例生成",
   DB: "数据库直连",
+  WEIBO_MID: "博文数据",
 };
 
 export function statusTone(status) {

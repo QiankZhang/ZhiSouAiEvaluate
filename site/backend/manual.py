@@ -23,7 +23,7 @@ from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import Response
 from pydantic import BaseModel
 
-from . import accounts, config, llm, report
+from . import accounts, config, llm, report, weibo
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +69,7 @@ def init(
     parse_rows,
     models: list,
     report_templates: list,
+    parse_weibo_rows=None,
 ) -> None:
     _ctx.update(
         tasks=tasks,
@@ -76,6 +77,7 @@ def init(
         next_id=next_id,
         persist=persist,
         parse_rows=parse_rows,
+        parse_weibo_rows=parse_weibo_rows,
         models=models,
         report_templates=report_templates,
     )
@@ -522,10 +524,99 @@ def _compute_summary(mt: dict[str, Any]) -> dict[str, Any]:
 
 
 def _refresh_progress(mt: dict[str, Any]) -> None:
+    if mt.get("convert_status") == "CONVERTING":
+        mt["status"] = "CONVERTING"
+        return
     done = sum(1 for u in mt["units"] if _unit_done(u, mt))
     mt["progress_done"] = done
     mt["status"] = "COMPLETED" if (mt["progress_total"] > 0 and done >= mt["progress_total"]) else "ANNOTATING"
     mt["summary"] = _compute_summary(mt)
+
+
+# ---------- 博文数据：mid → 物料 ----------
+
+def _build_weibo_units(raw: bytes, filename: str) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
+    """解析 mid + 智搜结果 → 占位多维度标注单元 + 待转换 mid 行。物料由后台线程回填 query。"""
+    parse = _ctx.get("parse_weibo_rows")
+    if not parse:
+        raise HTTPException(status_code=500, detail="博文解析未就绪")
+    rows, errors = parse(raw, filename)
+    if errors:
+        raise HTTPException(status_code=422, detail={"message": "文件校验未通过，请修正后重新上传", "errors": errors[:50]})
+    valid, invalid = weibo.normalize_mids([r["mid"] for r in rows])
+    if invalid:
+        raise HTTPException(status_code=422, detail={
+            "message": f"存在 {len(invalid)} 个非法 mid（应为纯数字）",
+            "errors": [{"line": 0, "message": m} for m in invalid[:50]],
+        })
+    if not valid:
+        raise HTTPException(status_code=422, detail={"message": "文件中没有可用的 mid", "errors": []})
+    if len(valid) > MAX_ROWS:
+        raise HTTPException(status_code=422, detail={"message": f"mid 数超过上限（{MAX_ROWS} 条）", "errors": []})
+
+    content_by_mid: dict[str, str] = {}
+    for r in rows:
+        content_by_mid.setdefault(r["mid"], r.get("content", ""))
+    mids_rows = [{"mid": m, "content": content_by_mid.get(m, "")} for m in valid]
+
+    units = [
+        {
+            "key": str(i),
+            "index": i,
+            "mid": m["mid"],
+            "query": "",
+            "content": m["content"],
+            "material_status": "PENDING",
+            "skipped": False,
+            "note": "",
+            "annotated_by": None,
+            "annotated_at": None,
+            "dim_scores": {},
+            "overridden_total": None,
+            "total": None,
+        }
+        for i, m in enumerate(mids_rows, start=1)
+    ]
+    return units, mids_rows
+
+
+def _run_manual_mid_conversion(mt_id: str, mids_rows: list[dict[str, str]]) -> None:
+    def progress_cb(done: int, phase: str) -> None:
+        with _lock():
+            mt = next((m for m in _tasks() if m["id"] == mt_id), None)
+            if mt:
+                mt["convert_done"] = done
+                mt["convert_phase"] = phase
+
+    def run() -> None:
+        try:
+            samples, failed = weibo.convert_rows(mids_rows, progress_cb=progress_cb, log=logger)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("人工任务 %s mid 转换失败", mt_id)
+            with _lock():
+                mt = next((m for m in _tasks() if m["id"] == mt_id), None)
+                if mt:
+                    mt["convert_status"] = "FAILED"
+                    mt["status"] = "CONVERTING"
+                    mt["convert_error"] = str(exc)
+            return
+        by_mid = {s["mid"]: s for s in samples}
+        with _lock():
+            mt = next((m for m in _tasks() if m["id"] == mt_id), None)
+            if not mt:
+                return
+            for u in mt["units"]:
+                got = by_mid.get(u.get("mid"))
+                if got:
+                    u["query"] = got["query"]
+                    u["material_status"] = got["material_status"]
+            mt["convert_failed"] = failed
+            mt["convert_done"] = mt.get("convert_total", len(mids_rows))
+            mt["convert_status"] = "PARTIAL" if failed else "READY"
+            mt["convert_error"] = ""
+            _refresh_progress(mt)
+
+    threading.Thread(target=run, daemon=True).start()
 
 
 # ---------- 视图 ----------
@@ -608,6 +699,7 @@ async def upload_manual_task(
     intent_labels: str = Form(""),
     report_template_id: str = Form(""),
     report_model: str = Form(""),
+    is_weibo: str = Form("false"),
     file: UploadFile = File(...),
 ) -> dict[str, Any]:
     name = name.strip()
@@ -617,6 +709,9 @@ async def upload_manual_task(
         raise HTTPException(status_code=400, detail="不支持的标注类型")
     if any(m["name"] == name for m in _tasks()):
         raise HTTPException(status_code=400, detail="同名标注任务已存在，请更换名称")
+    weibo_mode = str(is_weibo).lower() == "true"
+    if weibo_mode and annotate_type != "MULTI_DIM":
+        raise HTTPException(status_code=400, detail="博文数据目前仅支持多维度评估标注")
 
     dims: list[dict[str, Any]] = []
     if annotate_type in ("MULTI_DIM", "CONVERSATION"):
@@ -656,7 +751,12 @@ async def upload_manual_task(
     raw = await file.read()
     if len(raw) > 50 * 1024 * 1024:
         raise HTTPException(status_code=400, detail="文件超过 50MB 限制")
-    units = _build_units(annotate_type, raw, file.filename or "")
+
+    weibo_rows: list[dict[str, str]] = []
+    if weibo_mode:
+        units, weibo_rows = _build_weibo_units(raw, file.filename or "")
+    else:
+        units = _build_units(annotate_type, raw, file.filename or "")
 
     mt = {
         "id": _ctx["next_id"]("MT"),
@@ -680,6 +780,22 @@ async def upload_manual_task(
         "summary": None,
         "report": None,
     }
+    if weibo_mode:
+        mt.update(
+            is_weibo=True,
+            convert_status="CONVERTING",
+            convert_total=len(weibo_rows),
+            convert_done=0,
+            convert_phase="抓取物料",
+            convert_failed=[],
+            convert_error="",
+        )
+        mt["status"] = "CONVERTING"
+        with _lock():
+            _tasks().insert(0, mt)
+        _run_manual_mid_conversion(mt["id"], weibo_rows)
+        return _public(mt, with_units=True)
+
     _refresh_progress(mt)
     with _lock():
         _tasks().insert(0, mt)
@@ -689,6 +805,44 @@ async def upload_manual_task(
 @router.get("/{mt_id}")
 def get_manual_task(mt_id: str) -> dict[str, Any]:
     return _public(_find(mt_id), with_units=True)
+
+
+@router.get("/{mt_id}/convert-progress")
+def manual_convert_progress(mt_id: str) -> dict[str, Any]:
+    mt = _find(mt_id)
+    if not mt.get("is_weibo"):
+        raise HTTPException(status_code=400, detail="非博文标注任务")
+    return {
+        "status": mt.get("status"),
+        "convert_status": mt.get("convert_status"),
+        "done": mt.get("convert_done", 0),
+        "total": mt.get("convert_total", 0),
+        "phase": mt.get("convert_phase", ""),
+        "failed_count": len(mt.get("convert_failed") or []),
+        "error": mt.get("convert_error", ""),
+    }
+
+
+@router.post("/{mt_id}/retry-conversion")
+def manual_retry_conversion(mt_id: str) -> dict[str, Any]:
+    mt = _find(mt_id)
+    if not mt.get("is_weibo"):
+        raise HTTPException(status_code=400, detail="非博文标注任务")
+    if mt.get("convert_status") not in ("PARTIAL", "FAILED"):
+        raise HTTPException(status_code=400, detail="仅部分失败 / 转换失败的任务可重试")
+    if mt.get("convert_status") == "FAILED":
+        retry = [{"mid": u["mid"], "content": u.get("content", "")} for u in mt["units"]]
+    else:
+        retry = [{"mid": u["mid"], "content": u.get("content", "")} for u in mt["units"] if u.get("material_status") != "OK"]
+    if not retry:
+        raise HTTPException(status_code=400, detail="没有需要重试的 mid")
+    with _lock():
+        mt["convert_status"] = "CONVERTING"
+        mt["status"] = "CONVERTING"
+        mt["convert_phase"] = "抓取物料"
+        mt["convert_error"] = ""
+    _run_manual_mid_conversion(mt_id, retry)
+    return _public(mt, with_units=True)
 
 
 @router.put("/{mt_id}")

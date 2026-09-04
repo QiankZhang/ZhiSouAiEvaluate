@@ -85,6 +85,13 @@ export function ManualEvalPage({ navigate }) {
     api.get("/api/models").then((r) => setModels(r.items || [])).catch(() => {});
   }, []);
 
+  const anyConverting = (items || []).some((m) => m.convert_status === "CONVERTING");
+  useEffect(() => {
+    if (!anyConverting) return;
+    const t = setInterval(reload, 3000);
+    return () => clearInterval(t);
+  }, [anyConverting]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const filtered = useMemo(() => {
     let list = items || [];
     if (search) {
@@ -178,7 +185,10 @@ export function ManualEvalPage({ navigate }) {
               </thead>
               <tbody>
                 {filtered.map((m) => {
-                  const pct = m.progress_total ? (m.progress_done / m.progress_total) * 100 : 0;
+                  const pct =
+                    m.convert_status === "CONVERTING"
+                      ? (m.convert_total ? (m.convert_done / m.convert_total) * 100 : 0)
+                      : m.progress_total ? (m.progress_done / m.progress_total) * 100 : 0;
                   return (
                     <tr key={m.id} className="clickable" onClick={() => navigate(`/manual-eval/${m.id}`)}>
                       <td>
@@ -199,8 +209,8 @@ export function ManualEvalPage({ navigate }) {
                         </div>
                       </td>
                       <td>
-                        <Badge tone={m.status === "COMPLETED" ? "success" : "brand"} dot>
-                          {MANUAL_STATUS_LABELS[m.status] || m.status}
+                        <Badge tone={m.status === "COMPLETED" ? "success" : m.convert_status === "CONVERTING" ? "warning" : "brand"} dot>
+                          {m.convert_status === "CONVERTING" ? "物料转换中" : MANUAL_STATUS_LABELS[m.status] || m.status}
                         </Badge>
                       </td>
                       <td>{m.created_by}</td>
@@ -279,6 +289,7 @@ function CreateManualTaskModal({ open, onClose, onCreated, reportTemplates, mode
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState("");
   const [errors, setErrors] = useState([]);
+  const [isWeibo, setIsWeibo] = useState(false);
 
   const liveModels = (models || []).filter((m) => m.live);
 
@@ -298,18 +309,28 @@ function CreateManualTaskModal({ open, onClose, onCreated, reportTemplates, mode
     setSaving(false);
     setMessage("");
     setErrors([]);
+    setIsWeibo(false);
   }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (type !== "MULTI_DIM") setIsWeibo(false);
+  }, [type]);
 
   const needsDims = type === "MULTI_DIM" || type === "CONVERSATION";
   const totalWeight = dims.reduce((s, d) => s + (Number(d.weight) || 0), 0);
-  const accept =
-    type === "CONVERSATION" ? ".jsonl,.json,.csv" : type === "INTENT" ? ".csv,.json,.jsonl" : ".csv,.xlsx";
+  const accept = isWeibo
+    ? ".csv,.json,.jsonl,.xlsx"
+    : type === "CONVERSATION" ? ".jsonl,.json,.csv" : type === "INTENT" ? ".csv,.json,.jsonl" : ".csv,.xlsx";
 
   function setDim(i, patch) {
     setDims((prev) => prev.map((d, idx) => (idx === i ? { ...d, ...patch } : d)));
   }
 
   function downloadTemplate() {
+    if (isWeibo) {
+      downloadFile(`/api/datasets/template?weibo=1`, "博文数据集模板.csv").catch((e) => toast.error(e.message));
+      return;
+    }
     downloadFile(`/api/manual-tasks/template?annotate_type=${type}`, "标注模板.csv").catch((e) => toast.error(e.message));
   }
 
@@ -334,9 +355,10 @@ function CreateManualTaskModal({ open, onClose, onCreated, reportTemplates, mode
       fd.append("intent_labels", type === "INTENT" ? intentLabels : "");
       fd.append("report_template_id", reportTemplateId);
       fd.append("report_model", reportModel);
+      fd.append("is_weibo", isWeibo ? "true" : "false");
       fd.append("file", file);
       const created = await api.upload("/api/manual-tasks/upload", fd);
-      toast.success("标注任务已创建");
+      toast.success(isWeibo ? "任务已创建，正在解析 mid 物料…" : "标注任务已创建");
       onCreated(created);
     } catch (e) {
       if (e.detail && typeof e.detail === "object" && e.detail.errors) {
@@ -385,6 +407,15 @@ function CreateManualTaskModal({ open, onClose, onCreated, reportTemplates, mode
         </div>
       </Field>
 
+      {type === "MULTI_DIM" ? (
+        <Field label="博文数据" hint="勾选后上传「mid、智搜结果」两列；按 mid 解析原始博文/图片/视频物料转为文本，query=物料，content=智搜结果">
+          <label className="inline" style={{ gap: 8, cursor: "pointer" }}>
+            <input type="checkbox" checked={isWeibo} onChange={(e) => setIsWeibo(e.target.checked)} />
+            <span>将 mid 转换为原始物料</span>
+          </label>
+        </Field>
+      ) : null}
+
       {type === "GSB" ? (
         <Field label="左右布局" hint="决定标注工作台里两栏内容的位置">
           <select className="select" value={String(swapSides)} onChange={(e) => setSwapSides(e.target.value === "true")}>
@@ -413,16 +444,18 @@ function CreateManualTaskModal({ open, onClose, onCreated, reportTemplates, mode
         label="数据文件"
         required
         hint={
-          type === "CONVERSATION"
-            ? "JSONL / JSON / CSV，按 session_id 分组"
-            : type === "INTENT"
-              ? "CSV / JSON / JSONL，含 query、predicted_intent 列"
-              : "CSV / XLSX"
+          isWeibo
+            ? "两列：mid、智搜结果 · CSV / JSON / JSONL / XLSX"
+            : type === "CONVERSATION"
+              ? "JSONL / JSON / CSV，按 session_id 分组"
+              : type === "INTENT"
+                ? "CSV / JSON / JSONL，含 query、predicted_intent 列"
+                : "CSV / XLSX"
         }
       >
         <div className="inline" style={{ gap: 8, marginBottom: 8 }}>
           <Button size="sm" icon="download" onClick={downloadTemplate}>
-            下载 {ANNOTATE_TYPE_LABELS[type]} 模板
+            下载 {isWeibo ? "博文数据" : ANNOTATE_TYPE_LABELS[type]} 模板
           </Button>
         </div>
         <Dropzone accept={accept} onFile={setFile} hint={file ? "" : "点击选择或拖拽文件"} />
@@ -531,6 +564,13 @@ export function ManualAnnotatePage({ id, navigate }) {
     load();
   }, [id]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  const converting = task?.convert_status === "CONVERTING";
+  useEffect(() => {
+    if (!converting) return;
+    const t = setInterval(load, 3000);
+    return () => clearInterval(t);
+  }, [converting]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const current = task?.units.find((u) => u.key === currentKey) || null;
 
   useEffect(() => {
@@ -539,6 +579,42 @@ export function ManualAnnotatePage({ id, navigate }) {
 
   if (err) return <div className="content"><EmptyState title="加载失败" hint={err} /></div>;
   if (!task) return <div className="content"><div className="loading">正在加载…</div></div>;
+
+  if (task.is_weibo && (task.convert_status === "CONVERTING" || task.convert_status === "FAILED")) {
+    const cpct = task.convert_total ? Math.round((task.convert_done / task.convert_total) * 100) : 0;
+    return (
+      <div className="content">
+        <button className="back-link" onClick={() => navigate("/manual-eval")}>
+          <Icon name="back" size={16} />
+          返回列表
+        </button>
+        <div className="page-head">
+          <div>
+            <div className="page-title">{task.name}</div>
+            <div className="page-desc"><span className="mono">{task.id}</span> · mid 物料转换中</div>
+          </div>
+        </div>
+        <section className="card">
+          {task.convert_status === "FAILED" ? (
+            <>
+              <p style={{ color: "var(--danger)" }}>物料转换失败：{task.convert_error || "未知错误"}</p>
+              <Button
+                variant="primary"
+                onClick={() => api.post(`/api/manual-tasks/${id}/retry-conversion`, {}).then(load).catch((e) => toast.error(e.message))}
+              >
+                重试转换
+              </Button>
+            </>
+          ) : (
+            <>
+              <Progress value={cpct} />
+              <p className="card-sub mt-8">{task.convert_phase || "处理中"} · {task.convert_done}/{task.convert_total} · {cpct}%</p>
+            </>
+          )}
+        </section>
+      </div>
+    );
+  }
 
   const type = task.annotate_type;
   const pct = task.progress_total ? (task.progress_done / task.progress_total) * 100 : 0;

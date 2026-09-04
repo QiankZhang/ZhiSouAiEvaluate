@@ -25,6 +25,7 @@ from . import (
     report as report_mod,
     scoring,
     skills_registry,
+    weibo,
 )
 
 # 技能包解析实现迁移到 skills_registry，这里保留别名兼容既有调用点
@@ -57,6 +58,12 @@ COLUMN_ALIASES = {
     "query": {"query", "问题", "查询", "prompt", "输入", "question", "q"},
     "content": {"content", "待评内容", "回答", "答案", "response", "answer", "output", "结果", "生成内容", "新答案"},
     "baseline": {"baseline", "基线", "基线内容", "基线答案", "参考答案", "reference", "对照", "旧答案", "旧回答"},
+}
+
+# 博文数据集：上传两列 —— mid + 智搜结果；mid 经 qinglong 流水线转成原始物料后落 query
+WEIBO_COLUMN_ALIASES = {
+    "mid": {"mid", "微博mid", "博文mid", "blogid", "id", "weibomid"},
+    "content": {"智搜结果", "智搜结果数据", "智搜", "content", "searchresult", "result", "回答", "答案", "zhisou"},
 }
 
 
@@ -648,7 +655,10 @@ def _tasks_using_benchmark(benchmark_id: str) -> list[dict[str, Any]]:
 
 
 def _dataset_to_csv(dataset: dict[str, Any]) -> str:
-    fieldnames = ["row_index", "query", "content"] + (["baseline"] if dataset["eval_method"] == "GSB" else [])
+    if dataset.get("is_weibo"):
+        fieldnames = ["row_index", "mid", "material_status", "query", "content"]
+    else:
+        fieldnames = ["row_index", "query", "content"] + (["baseline"] if dataset["eval_method"] == "GSB" else [])
     buf = io.StringIO()
     writer = csv.DictWriter(buf, fieldnames=fieldnames, extrasaction="ignore")
     writer.writeheader()
@@ -764,6 +774,86 @@ def _parse_upload_rows(raw: bytes, filename: str, eval_method: str) -> tuple[lis
         valid_rows.append({c: str(row.get(c, "")).strip() for c in ["query", "content", "baseline"]})
 
     return valid_rows, errors
+
+
+def _parse_weibo_upload_rows(raw: bytes, filename: str) -> tuple[list[dict[str, str]], list[dict[str, Any]]]:
+    """解析博文数据集上传：两列 mid + 智搜结果。复用通用多格式解析，仅换字段识别规则。"""
+    lower = (filename or "").lower()
+    errors: list[dict[str, Any]] = []
+    raw_rows: list[tuple[int, dict[str, Any]]] = []
+
+    if lower.endswith(".xlsx"):
+        try:
+            header, data_rows = _parse_xlsx_rows(raw)
+        except Exception as exc:  # noqa: BLE001
+            return [], [{"line": 0, "message": f"Excel 文件解析失败（{exc}）"}]
+        if not header:
+            return [], [{"line": 1, "message": "未识别到表头，请使用「mid,智搜结果」两列"}]
+        for i, row in enumerate(data_rows, start=2):
+            raw_rows.append((i, {header[j]: ("" if j >= len(row) or row[j] is None else str(row[j])) for j in range(len(header))}))
+    elif lower.endswith(".xls"):
+        return [], [{"line": 0, "message": "暂不支持旧版 .xls，请另存为 .xlsx 或 .csv"}]
+    else:
+        try:
+            text = raw.decode("utf-8-sig")
+        except UnicodeDecodeError:
+            return [], [{"line": 0, "message": "文件编码不支持，请使用 UTF-8"}]
+        if lower.endswith(".jsonl"):
+            for i, line in enumerate(text.splitlines(), start=1):
+                if line.strip():
+                    try:
+                        raw_rows.append((i, json.loads(line)))
+                    except json.JSONDecodeError as exc:
+                        errors.append({"line": i, "message": f"JSON 解析失败：{exc.msg}"})
+        elif lower.endswith(".json"):
+            try:
+                payload = json.loads(text)
+            except json.JSONDecodeError as exc:
+                return [], [{"line": exc.lineno, "message": f"JSON 解析失败：{exc.msg}"}]
+            if not isinstance(payload, list):
+                return [], [{"line": 1, "message": "JSON 根节点必须是数组"}]
+            for i, item in enumerate(payload, start=1):
+                raw_rows.append((i + 1, item if isinstance(item, dict) else {}))
+        elif lower.endswith(".csv"):
+            reader = csv.DictReader(io.StringIO(text))
+            if not reader.fieldnames:
+                return [], [{"line": 1, "message": "未识别到表头，请使用「mid,智搜结果」两列"}]
+            for i, row in enumerate(reader, start=2):
+                raw_rows.append((i, row))
+        else:
+            return [], [{"line": 0, "message": "不支持的格式，请上传 CSV / JSON / JSONL / XLSX"}]
+
+    if not raw_rows and not errors:
+        return [], [{"line": 0, "message": "文件中没有可用数据行"}]
+
+    field_map = _resolve_weibo_field_map(list(raw_rows[0][1].keys()) if raw_rows else [])
+    rows: list[dict[str, str]] = []
+    for line_no, row in raw_rows:
+        mid = str(row.get(field_map.get("mid", ""), "") or "").strip()
+        content = str(row.get(field_map.get("content", ""), "") or "").strip()
+        if not mid:
+            errors.append({"line": line_no, "message": "缺少 mid"})
+            continue
+        rows.append({"mid": mid, "content": content})
+    return rows, errors
+
+
+def _resolve_weibo_field_map(keys: list[str]) -> dict[str, str]:
+    norm_alias = {c: {_normalize_col(a) for a in al} for c, al in WEIBO_COLUMN_ALIASES.items()}
+    field_map: dict[str, str] = {}
+    used: set[str] = set()
+    for key in keys:
+        norm = _normalize_col(key)
+        for canon in ("mid", "content"):
+            if canon not in field_map and (norm == canon or norm in norm_alias[canon]):
+                field_map[canon] = key
+                used.add(key)
+                break
+    leftover = [k for k in keys if k not in used]
+    for canon in ("mid", "content"):
+        if canon not in field_map and leftover:
+            field_map[canon] = leftover.pop(0)
+    return field_map
 
 
 def _failed_result(sample: dict[str, Any], benchmark: dict[str, Any], err: str) -> dict[str, Any]:
@@ -891,6 +981,133 @@ def _run_evaluation(task_id: str) -> None:
     threading.Thread(target=run, daemon=True).start()
 
 
+# ---- 博文数据集：mid → 原始物料转换 ----
+
+_WEIBO_PHASE_WEIGHT = {"抓取物料": (0.0, 0.5), "图片分析": (0.5, 1.0)}
+
+
+def _weibo_percent(dataset: dict[str, Any]) -> int:
+    total = dataset.get("convert_total") or 0
+    done = dataset.get("convert_done") or 0
+    if dataset.get("convert_status") in ("READY", "PARTIAL"):
+        return 100
+    if not total:
+        return 0
+    lo, hi = _WEIBO_PHASE_WEIGHT.get(dataset.get("convert_phase") or "", (0.0, 1.0))
+    return max(0, min(99, round((lo + (hi - lo) * done / total) * 100)))
+
+
+def _run_mid_conversion(dataset_id: str, mids_rows: list[dict[str, str]]) -> None:
+    """后台线程：调 qinglong 流水线把 mid 转成物料，逐阶段回写进度；
+    完成后替换样本、置 READY / PARTIAL；整体失败置 FAILED（可重试）。"""
+    log = logging.getLogger(__name__)
+
+    def progress_cb(done: int, phase: str) -> None:
+        with _lock:
+            try:
+                d = _find_dataset(dataset_id)
+            except HTTPException:
+                return
+            d["convert_done"] = done
+            d["convert_phase"] = phase
+
+    def run() -> None:
+        try:
+            samples, failed = weibo.convert_rows(mids_rows, progress_cb=progress_cb, log=log)
+        except weibo.WeiboConvertError as exc:
+            with _lock:
+                try:
+                    d = _find_dataset(dataset_id)
+                except HTTPException:
+                    return
+                d["convert_status"] = "FAILED"
+                d["status"] = "FAILED"
+                d["convert_error"] = str(exc)
+            return
+        except Exception as exc:  # noqa: BLE001 - 兜底，避免线程静默退出留下永久 CONVERTING
+            log.exception("数据集 %s mid 转换异常", dataset_id)
+            with _lock:
+                try:
+                    d = _find_dataset(dataset_id)
+                except HTTPException:
+                    return
+                d["convert_status"] = "FAILED"
+                d["status"] = "FAILED"
+                d["convert_error"] = f"转换异常：{exc}"
+            return
+
+        with _lock:
+            try:
+                d = _find_dataset(dataset_id)
+            except HTTPException:
+                return
+            d["samples"] = samples
+            d["total_items"] = len(samples)
+            d["total_chars"] = _chars(samples)
+            d["convert_done"] = len(samples)
+            d["convert_failed"] = failed
+            ok = "PARTIAL" if failed else "READY"
+            d["convert_status"] = ok
+            d["status"] = "READY"
+            d["convert_error"] = ""
+
+    threading.Thread(target=run, daemon=True).start()
+
+
+def _run_mid_retry(dataset_id: str, retry_rows: list[dict[str, str]]) -> None:
+    """只对失败 mid 重跑，把新结果按 mid 合并回既有样本。"""
+    log = logging.getLogger(__name__)
+
+    def progress_cb(done: int, phase: str) -> None:
+        with _lock:
+            try:
+                d = _find_dataset(dataset_id)
+            except HTTPException:
+                return
+            d["convert_done"] = done
+            d["convert_phase"] = phase
+
+    def run() -> None:
+        try:
+            new_samples, _failed = weibo.convert_rows(retry_rows, progress_cb=progress_cb, log=log)
+        except Exception as exc:  # noqa: BLE001
+            log.exception("数据集 %s 重试转换异常", dataset_id)
+            with _lock:
+                try:
+                    d = _find_dataset(dataset_id)
+                except HTTPException:
+                    return
+                d["convert_status"] = "PARTIAL" if (d.get("convert_failed") or []) else "READY"
+                d["status"] = "READY"
+                d["convert_error"] = f"重试异常：{exc}"
+            return
+
+        by_mid = {s["mid"]: s for s in new_samples}
+        with _lock:
+            try:
+                d = _find_dataset(dataset_id)
+            except HTTPException:
+                return
+            for s in d["samples"]:
+                got = by_mid.get(s["mid"])
+                if got and got["material_status"] == "OK":
+                    s["query"] = got["query"]
+                    s["material_status"] = "OK"
+                    s["material_meta"] = got.get("material_meta", {})
+            still_failed = [
+                {"mid": s["mid"], "row_index": s["row_index"], "error": "重试后仍失败"}
+                for s in d["samples"] if s["material_status"] != "OK"
+            ]
+            d["convert_failed"] = still_failed
+            d["total_chars"] = _chars(d["samples"])
+            d["convert_done"] = d.get("convert_total", len(d["samples"]))
+            d["convert_status"] = "PARTIAL" if still_failed else "READY"
+            d["status"] = "READY"
+            d["convert_error"] = ""
+
+    threading.Thread(target=run, daemon=True).start()
+
+
 # ---- 路由 ----
 
 
@@ -981,6 +1198,11 @@ def _dataset_out(d: dict[str, Any]) -> dict[str, Any]:
     out = _public_dataset(d)
     out["used_by_tasks"] = len(_tasks_using_dataset(d["id"]))
     out["eval_method_display"] = _method_display(d)
+    if d.get("is_weibo"):
+        failed = d.get("convert_failed") or []
+        out["convert_failed"] = failed[:20]
+        out["convert_failed_count"] = len(failed)
+        out["convert_percent"] = _weibo_percent(d)
     return out
 
 
@@ -1045,10 +1267,23 @@ def create_dataset(body: DatasetCreate) -> dict[str, Any]:
     return _dataset_out(dataset)
 
 
+_WEIBO_TEMPLATE_ROWS = [
+    {"mid": "5031234567890123", "智搜结果": "示例：这里填写该 mid 对应的智搜结果原文（待评内容）。"},
+    {"mid": "5039876543210987", "智搜结果": "示例：第二条智搜结果。"},
+]
+
+
 @app.get("/api/datasets/template")
-def dataset_template(eval_method: str = "MULTI_DIM") -> Response:
-    csv_text = _template_csv(eval_method)
-    filename = "多维度模板.csv" if eval_method == "MULTI_DIM" else "GSB模板.csv"
+def dataset_template(eval_method: str = "MULTI_DIM", weibo: int = 0) -> Response:
+    if weibo:
+        buf = io.StringIO()
+        writer = csv.DictWriter(buf, fieldnames=["mid", "智搜结果"])
+        writer.writeheader()
+        writer.writerows(_WEIBO_TEMPLATE_ROWS)
+        csv_text, filename = buf.getvalue(), "博文数据集模板.csv"
+    else:
+        csv_text = _template_csv(eval_method)
+        filename = "多维度模板.csv" if eval_method == "MULTI_DIM" else "GSB模板.csv"
     return Response(
         content=csv_text,
         media_type="text/csv; charset=utf-8",
@@ -1062,6 +1297,7 @@ async def upload_dataset(
     description: str = Form(""),
     eval_method: str = Form("MULTI_DIM"),
     eval_method_label: str = Form(""),
+    is_weibo: bool = Form(False),
     file: UploadFile = File(...),
 ) -> dict[str, Any]:
     if not name.strip():
@@ -1071,6 +1307,11 @@ async def upload_dataset(
     raw = await file.read()
     if len(raw) > 50 * 1024 * 1024:
         raise HTTPException(status_code=400, detail="文件超过 50MB 限制")
+    fmt = (file.filename or "").rsplit(".", 1)[-1].upper() if "." in (file.filename or "") else "CSV"
+
+    if is_weibo:
+        return _create_weibo_dataset(name, description, fmt, raw, file.filename or "")
+
     rows, errors = _parse_upload_rows(raw, file.filename or "", eval_method)
     if errors:
         raise HTTPException(status_code=422, detail={"message": "文件校验未通过，请修正后重新上传", "errors": errors[:50]})
@@ -1082,7 +1323,6 @@ async def upload_dataset(
         for i, r in enumerate(rows)
     ]
     did = _next_id("DS")
-    fmt = (file.filename or "").rsplit(".", 1)[-1].upper() if "." in (file.filename or "") else "CSV"
     dataset = {
         "id": did,
         "name": name.strip(),
@@ -1103,6 +1343,62 @@ async def upload_dataset(
     return _dataset_out(dataset)
 
 
+def _create_weibo_dataset(name: str, description: str, fmt: str, raw: bytes, filename: str) -> dict[str, Any]:
+    """博文数据集：解析 mid + 智搜结果 → 建 CONVERTING 数据集 → 起后台线程调 qinglong 转物料。"""
+    rows, errors = _parse_weibo_upload_rows(raw, filename)
+    if errors:
+        raise HTTPException(status_code=422, detail={"message": "文件校验未通过，请修正后重新上传", "errors": errors[:50]})
+    valid, invalid = weibo.normalize_mids([r["mid"] for r in rows])
+    if invalid:
+        raise HTTPException(status_code=422, detail={
+            "message": f"存在 {len(invalid)} 个非法 mid（应为纯数字）",
+            "errors": [{"line": 0, "message": m} for m in invalid[:50]],
+        })
+    if not valid:
+        raise HTTPException(status_code=422, detail={"message": "文件中没有可用的 mid", "errors": []})
+    if len(valid) > config.WEIBO_MID_MAX:
+        raise HTTPException(status_code=422, detail={"message": f"mid 数超过上限（{config.WEIBO_MID_MAX}）", "errors": []})
+
+    # 去重后按首次出现顺序保留对应的智搜结果
+    content_by_mid: dict[str, str] = {}
+    for r in rows:
+        content_by_mid.setdefault(r["mid"], r.get("content", ""))
+    mids_rows = [{"mid": m, "content": content_by_mid.get(m, "")} for m in valid]
+
+    did = _next_id("DS")
+    samples = [
+        {"id": f"item-{i + 1}", "row_index": i + 1, "mid": m["mid"], "query": "", "content": m["content"],
+         "baseline": "", "material_status": "PENDING", "material_meta": {}}
+        for i, m in enumerate(mids_rows)
+    ]
+    dataset = {
+        "id": did,
+        "name": name.strip(),
+        "description": description,
+        "source": "WEIBO_MID",
+        "is_weibo": True,
+        "eval_method": "MULTI_DIM",
+        "eval_method_label": "",
+        "format": fmt,
+        "total_items": len(samples),
+        "total_chars": 0,
+        "status": "CONVERTING",
+        "convert_status": "CONVERTING",
+        "convert_total": len(mids_rows),
+        "convert_done": 0,
+        "convert_phase": "抓取物料",
+        "convert_failed": [],
+        "convert_error": "",
+        "created_by": accounts.creator_name(),
+        "created_at": now(),
+        "samples": samples,
+    }
+    with _lock:
+        _datasets.append(dataset)
+    _run_mid_conversion(did, mids_rows)
+    return _dataset_out(dataset)
+
+
 @app.get("/api/datasets/{dataset_id}")
 def get_dataset(dataset_id: str) -> dict[str, Any]:
     dataset = _find_dataset(dataset_id)
@@ -1110,6 +1406,68 @@ def get_dataset(dataset_id: str) -> dict[str, Any]:
     result["samples"] = dataset["samples"][:10]
     result["used_by"] = [{"id": t["id"], "name": t["name"], "status": t["status"]} for t in _tasks_using_dataset(dataset_id)]
     return result
+
+
+@app.get("/api/datasets/{dataset_id}/convert-progress")
+def dataset_convert_progress(dataset_id: str) -> dict[str, Any]:
+    d = _find_dataset(dataset_id)
+    if not d.get("is_weibo"):
+        raise HTTPException(status_code=400, detail="非博文数据集")
+    return {
+        "status": d.get("status"),
+        "convert_status": d.get("convert_status"),
+        "done": d.get("convert_done", 0),
+        "total": d.get("convert_total", 0),
+        "phase": d.get("convert_phase", ""),
+        "percent": _weibo_percent(d),
+        "failed_count": len(d.get("convert_failed") or []),
+        "error": d.get("convert_error", ""),
+    }
+
+
+@app.post("/api/datasets/{dataset_id}/retry-conversion")
+def retry_dataset_conversion(dataset_id: str) -> dict[str, Any]:
+    d = _find_dataset(dataset_id)
+    if not d.get("is_weibo"):
+        raise HTTPException(status_code=400, detail="非博文数据集")
+    if d.get("convert_status") not in ("PARTIAL", "FAILED"):
+        raise HTTPException(status_code=400, detail="仅部分失败 / 转换失败的数据集可重试")
+
+    if d.get("convert_status") == "FAILED":
+        retry_mids = [{"mid": s["mid"], "content": s.get("content", "")} for s in d["samples"]]
+    else:
+        failed_idx = {f["row_index"] for f in (d.get("convert_failed") or [])}
+        retry_mids = [
+            {"mid": s["mid"], "content": s.get("content", "")}
+            for s in d["samples"] if s["row_index"] in failed_idx
+        ]
+    if not retry_mids:
+        raise HTTPException(status_code=400, detail="没有需要重试的 mid")
+
+    with _lock:
+        d["status"] = "CONVERTING"
+        d["convert_status"] = "CONVERTING"
+        d["convert_phase"] = "抓取物料"
+        d["convert_error"] = ""
+    _run_mid_retry(dataset_id, retry_mids)
+    return _dataset_out(d)
+
+
+@app.get("/api/datasets/{dataset_id}/failed-mids")
+def download_failed_mids(dataset_id: str) -> Response:
+    d = _find_dataset(dataset_id)
+    if not d.get("is_weibo"):
+        raise HTTPException(status_code=400, detail="非博文数据集")
+    buf = io.StringIO()
+    writer = csv.DictWriter(buf, fieldnames=["mid", "error"])
+    writer.writeheader()
+    for f in d.get("convert_failed") or []:
+        writer.writerow({"mid": f.get("mid", ""), "error": f.get("error", "")})
+    return Response(
+        content=buf.getvalue(),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(d['name'] + '-失败mid.csv')}"},
+    )
 
 
 @app.get("/api/datasets/{dataset_id}/download")
@@ -1572,6 +1930,10 @@ def create_task(body: TaskCreate) -> dict[str, Any]:
     dataset = _find_dataset(body.dataset_id)
     if benchmark["eval_method"] != dataset["eval_method"]:
         raise HTTPException(status_code=400, detail="评估基准与数据集的评估方式不一致")
+    if dataset.get("convert_status") == "CONVERTING" or dataset.get("status") == "CONVERTING":
+        raise HTTPException(status_code=400, detail="博文数据集物料转换中，请等转换完成后再创建任务")
+    if dataset.get("convert_status") == "FAILED":
+        raise HTTPException(status_code=400, detail="博文数据集物料转换失败，请先重试转换")
     task = _new_task(
         _next_id("TK"),
         body.name.strip(),
@@ -1627,6 +1989,8 @@ def update_task(task_id: str, body: TaskUpdate) -> dict[str, Any]:
     dataset = _find_dataset(body.dataset_id)
     if benchmark["eval_method"] != dataset["eval_method"]:
         raise HTTPException(status_code=400, detail="评估基准与数据集的评估方式不一致")
+    if dataset.get("convert_status") in ("CONVERTING", "FAILED"):
+        raise HTTPException(status_code=400, detail="博文数据集物料未就绪，无法用于任务")
     with _lock:
         rebuilt = _new_task(
             task_id,
@@ -1907,6 +2271,7 @@ _manual.init(
     next_id=_next_id,
     persist=_persist_state,
     parse_rows=_parse_upload_rows,
+    parse_weibo_rows=_parse_weibo_upload_rows,
     models=_MODELS,
     report_templates=_report_templates,
 )

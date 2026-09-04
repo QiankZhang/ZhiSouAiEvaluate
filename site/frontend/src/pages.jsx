@@ -526,11 +526,15 @@ function CreateTaskModal({
         <div className="inline" style={{ gap: 8, width: "100%" }}>
           <select className="select" style={{ flex: 1 }} value={datasetId} onChange={(e) => setDatasetId(e.target.value)}>
             <option value="">{evalMethod ? `请选择数据集（${METHOD_LABELS[evalMethod]}）` : "请选择数据集"}</option>
-            {datasetsForMethod.map((d) => (
-              <option key={d.id} value={d.id}>
-                {d.name}（{d.total_items}条 / {Math.round(d.total_chars / 10000)}万字）
-              </option>
-            ))}
+            {datasetsForMethod.map((d) => {
+              const busy = d.convert_status === "CONVERTING" || d.convert_status === "FAILED";
+              return (
+                <option key={d.id} value={d.id} disabled={busy}>
+                  {d.name}（{d.total_items}条 / {Math.round(d.total_chars / 10000)}万字）
+                  {d.convert_status === "CONVERTING" ? " · 物料转换中" : d.convert_status === "FAILED" ? " · 转换失败" : ""}
+                </option>
+              );
+            })}
           </select>
           <Button icon="plus" onClick={() => setShowCreateDataset(true)}>
             创建新数据集
@@ -1647,8 +1651,30 @@ export function TaskReportPage({ id, navigate }) {
 
 /* ---------------- 数据集 ---------------- */
 
-function ExamplePreview({ rows, evalMethod }) {
+function ExamplePreview({ rows, evalMethod, weibo }) {
   if (!rows) return null;
+  if (weibo) {
+    return (
+      <div className="table-wrap mt-8">
+        <table className="table">
+          <thead>
+            <tr>
+              <th>mid</th>
+              <th>智搜结果</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r, i) => (
+              <tr key={i}>
+                <td>{r.mid}</td>
+                <td>{r["智搜结果"]}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    );
+  }
   return (
     <div className="table-wrap mt-8">
       <table className="table">
@@ -1687,6 +1713,7 @@ function CreateDatasetModal({ open, onClose, onCreated, methodOptions }) {
   const [errors, setErrors] = useState([]);
   const [exampleRows, setExampleRows] = useState(null);
   const [showExample, setShowExample] = useState(false);
+  const [isWeibo, setIsWeibo] = useState(false);
 
   const allMethodOptions = useMemo(() => {
     const map = new Map();
@@ -1712,6 +1739,7 @@ function CreateDatasetModal({ open, onClose, onCreated, methodOptions }) {
     setErrors([]);
     setExampleRows(null);
     setShowExample(false);
+    setIsWeibo(false);
   }, [open]);
 
   useEffect(() => {
@@ -1719,7 +1747,16 @@ function CreateDatasetModal({ open, onClose, onCreated, methodOptions }) {
     setShowExample(false);
     setFile(null);
     setErrors([]);
-  }, [mechanism]);
+  }, [mechanism, isWeibo]);
+
+  // 博文数据仅支持多维度评估
+  useEffect(() => {
+    if (isWeibo) {
+      setMechanism("MULTI_DIM");
+      setMethodLabel(BASE_METHOD_OPTIONS[0].label);
+      setAddingMethod(false);
+    }
+  }, [isWeibo]);
 
   function selectMethod(value) {
     if (value === "__add__") {
@@ -1749,7 +1786,8 @@ function CreateDatasetModal({ open, onClose, onCreated, methodOptions }) {
       return;
     }
     try {
-      const res = await fetch(`/api/datasets/template?eval_method=${mechanism}`);
+      const qs = isWeibo ? "weibo=1" : `eval_method=${mechanism}`;
+      const res = await fetch(`/api/datasets/template?${qs}`);
       const text = await res.text();
       const lines = text.trim().split("\n");
       const header = lines[0].split(",");
@@ -1765,7 +1803,8 @@ function CreateDatasetModal({ open, onClose, onCreated, methodOptions }) {
   }
 
   function downloadTemplate() {
-    downloadFile(`/api/datasets/template?eval_method=${mechanism}`, "数据集模板.csv").catch((err) => toast.error(err.message));
+    const qs = isWeibo ? "weibo=1" : `eval_method=${mechanism}`;
+    downloadFile(`/api/datasets/template?${qs}`, isWeibo ? "博文数据集模板.csv" : "数据集模板.csv").catch((err) => toast.error(err.message));
   }
 
   async function submit() {
@@ -1785,11 +1824,12 @@ function CreateDatasetModal({ open, onClose, onCreated, methodOptions }) {
       const fd = new FormData();
       fd.append("name", name.trim());
       fd.append("description", description);
-      fd.append("eval_method", mechanism);
-      fd.append("eval_method_label", methodLabel === defaultLabel ? "" : methodLabel);
+      fd.append("eval_method", isWeibo ? "MULTI_DIM" : mechanism);
+      fd.append("eval_method_label", isWeibo || methodLabel === defaultLabel ? "" : methodLabel);
+      fd.append("is_weibo", isWeibo ? "true" : "false");
       fd.append("file", file);
       const created = await api.upload("/api/datasets/upload", fd);
-      toast.success("数据集已创建");
+      toast.success(isWeibo ? "数据集已创建，正在解析 mid 物料…" : "数据集已创建");
       onCreated(created);
     } catch (err) {
       if (err.detail && typeof err.detail === "object" && err.detail.errors) {
@@ -1824,18 +1864,32 @@ function CreateDatasetModal({ open, onClose, onCreated, methodOptions }) {
       <Field label="数据集描述" hint={`非必填，最多 200 字 · ${description.length}/200`}>
         <textarea className="textarea" value={description} onChange={(e) => setDescription(e.target.value)} placeholder="说明数据集用途与范围" maxLength={200} />
       </Field>
-      <Field label="评估方式" required hint="决定数据集必需列：多维度机制需要 query/content；GSB 机制额外需要 baseline">
-        <select className="select" value={methodLabel} onChange={(e) => selectMethod(e.target.value)}>
-          {allMethodOptions.map((o) => (
-            <option key={o.label} value={o.label}>
-              {o.label}（{o.mechanism === "GSB" ? "GSB 机制" : "多维度机制"}）
-            </option>
-          ))}
-          <option value="__add__">+ 新增评估方式…</option>
-        </select>
+
+      <Field label="博文数据" hint="勾选后上传两列「mid、智搜结果」；导入后按 mid 解析原始博文、图片、视频等物料转为文本，仅支持多维度评估">
+        <label className="inline" style={{ gap: 8, cursor: "pointer" }}>
+          <input type="checkbox" checked={isWeibo} onChange={(e) => setIsWeibo(e.target.checked)} />
+          <span>将 mid 转换为原始物料</span>
+        </label>
       </Field>
 
-      {addingMethod ? (
+      {isWeibo ? (
+        <Field label="评估方式">
+          <div className="text-tertiary" style={{ fontSize: 13 }}>博文数据固定使用「多维度」评估（query = 解析出的物料，content = 智搜结果）</div>
+        </Field>
+      ) : (
+        <Field label="评估方式" required hint="决定数据集必需列：多维度机制需要 query/content；GSB 机制额外需要 baseline">
+          <select className="select" value={methodLabel} onChange={(e) => selectMethod(e.target.value)}>
+            {allMethodOptions.map((o) => (
+              <option key={o.label} value={o.label}>
+                {o.label}（{o.mechanism === "GSB" ? "GSB 机制" : "多维度机制"}）
+              </option>
+            ))}
+            <option value="__add__">+ 新增评估方式…</option>
+          </select>
+        </Field>
+      )}
+
+      {addingMethod && !isWeibo ? (
         <div className="card" style={{ padding: 14 }}>
           <Field label="新评估方式名称" required>
             <input className="input" value={newMethodName} onChange={(e) => setNewMethodName(e.target.value)} placeholder="如：语义相似度评估" maxLength={20} />
@@ -1871,7 +1925,7 @@ function CreateDatasetModal({ open, onClose, onCreated, methodOptions }) {
           {showExample ? "收起样例" : "查看数据集样例"}
         </Button>
       </div>
-      {showExample ? <ExamplePreview rows={exampleRows} evalMethod={mechanism} /> : null}
+      {showExample ? <ExamplePreview rows={exampleRows} evalMethod={mechanism} weibo={isWeibo} /> : null}
       <Dropzone
         accept=".csv,.json,.jsonl,.xlsx"
         onFile={(f) => {
@@ -1879,7 +1933,7 @@ function CreateDatasetModal({ open, onClose, onCreated, methodOptions }) {
           setErrors([]);
           setMessage("");
         }}
-        hint="支持 CSV / JSON / JSONL / XLSX，单文件 ≤ 50MB"
+        hint={isWeibo ? "两列：mid、智搜结果 · CSV / JSON / JSONL / XLSX · ≤ 50MB" : "支持 CSV / JSON / JSONL / XLSX，单文件 ≤ 50MB"}
       />
       {errors.length > 0 ? (
         <div className="error-list">
@@ -1909,6 +1963,12 @@ export function DatasetsPage({ navigate }) {
   const [busy, setBusy] = useState(false);
 
   const all = data?.items || [];
+  const converting = all.some((d) => d.convert_status === "CONVERTING");
+  useEffect(() => {
+    if (!converting) return;
+    const t = setInterval(reload, 3000);
+    return () => clearInterval(t);
+  }, [converting, reload]);
   const creators = useMemo(() => Array.from(new Set(all.map((d) => d.created_by))), [all]);
   const methodOptions = useMemo(() => {
     const map = new Map();
@@ -1973,7 +2033,20 @@ export function DatasetsPage({ navigate }) {
     { key: "eval_method", title: "评估方式", render: (d) => <MethodBadge method={d.eval_method} label={d.eval_method_display} /> },
     { key: "source", title: "来源", render: (d) => <Badge tone="outline">{SOURCE_LABELS[d.source] || d.source}</Badge> },
     { key: "total_chars", title: "字数数量", render: (d) => <span>{d.total_chars.toLocaleString()}</span> },
-    { key: "total_items", title: "数据条数", render: (d) => <span>{d.total_items}</span> },
+    {
+      key: "total_items",
+      title: "数据条数",
+      render: (d) =>
+        d.convert_status === "CONVERTING" ? (
+          <span className="cell-secondary">物料转换 {d.convert_percent ?? 0}%</span>
+        ) : d.convert_status === "FAILED" ? (
+          <Badge tone="danger">转换失败</Badge>
+        ) : d.convert_status === "PARTIAL" ? (
+          <span>{d.total_items} · <Badge tone="warning">{d.convert_failed_count} 条失败</Badge></span>
+        ) : (
+          <span>{d.total_items}</span>
+        ),
+    },
     { key: "created_at", title: "创建时间", render: (d) => <span className="cell-secondary">{d.created_at}</span> },
     { key: "created_by", title: "创建人", render: (d) => <span>{d.created_by}</span> },
     {
@@ -2070,9 +2143,17 @@ export function DatasetsPage({ navigate }) {
 }
 
 export function DatasetDetailPage({ id, navigate }) {
-  const { data, loading, error } = useLoad(() => api.get(`/api/datasets/${id}`), [id]);
+  const { data, loading, error, reload } = useLoad(() => api.get(`/api/datasets/${id}`), [id]);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [retrying, setRetrying] = useState(false);
+
+  const converting = data?.convert_status === "CONVERTING";
+  useEffect(() => {
+    if (!converting) return;
+    const t = setInterval(reload, 3000);
+    return () => clearInterval(t);
+  }, [converting, reload]);
 
   if (loading && !data) return <Loading />;
   if (error) return <ErrorBox message={error} />;
@@ -2080,6 +2161,19 @@ export function DatasetDetailPage({ id, navigate }) {
 
   const d = data;
   const usedBy = d.used_by || [];
+
+  async function handleRetry() {
+    setRetrying(true);
+    try {
+      await api.post(`/api/datasets/${id}/retry-conversion`, {});
+      toast.success("已重新发起物料转换");
+      reload();
+    } catch (err) {
+      toast.error(err.message);
+    } finally {
+      setRetrying(false);
+    }
+  }
 
   async function handleDelete() {
     setBusy(true);
@@ -2105,8 +2199,20 @@ export function DatasetDetailPage({ id, navigate }) {
 
   const sampleColumns = [
     { key: "row_index", title: "#", width: 52 },
-    { key: "query", title: "Query" },
-    { key: "content", title: "待评内容" },
+    ...(d.is_weibo ? [{ key: "mid", title: "mid", width: 150, render: (s) => <span className="mono">{s.mid}</span> }] : []),
+    { key: "query", title: d.is_weibo ? "物料（Query）" : "Query" },
+    { key: "content", title: d.is_weibo ? "智搜结果（待评）" : "待评内容" },
+    ...(d.is_weibo
+      ? [{
+          key: "material_status",
+          title: "物料",
+          width: 80,
+          render: (s) =>
+            s.material_status === "OK" ? <Badge tone="success">已解析</Badge>
+            : s.material_status === "FAILED" ? <Badge tone="danger">失败</Badge>
+            : <Badge tone="outline">待转换</Badge>,
+        }]
+      : []),
     ...(d.eval_method === "GSB" ? [{ key: "baseline", title: "基线内容" }] : []),
   ];
 
@@ -2138,6 +2244,43 @@ export function DatasetDetailPage({ id, navigate }) {
           </Button>
         </div>
       </div>
+
+      {d.is_weibo ? (
+        <section className="card" style={{ marginBottom: 16 }}>
+          <div className="toolbar" style={{ padding: 0 }}>
+            <h3 className="card-title" style={{ margin: 0 }}>mid 物料转换</h3>
+            <span className="spacer" />
+            {d.convert_status === "PARTIAL" || d.convert_status === "FAILED" ? (
+              <div className="inline" style={{ gap: 8 }}>
+                {d.convert_failed_count > 0 ? (
+                  <Button size="sm" icon="download" onClick={() => downloadFile(`/api/datasets/${id}/failed-mids`, `${d.name}-失败mid.csv`).catch((e) => toast.error(e.message))}>
+                    失败 mid（{d.convert_failed_count}）
+                  </Button>
+                ) : null}
+                <Button size="sm" variant="primary" onClick={handleRetry} disabled={retrying}>
+                  {retrying ? "重试中…" : "重试失败项"}
+                </Button>
+              </div>
+            ) : null}
+          </div>
+          <div className="mt-16">
+            {d.convert_status === "CONVERTING" ? (
+              <>
+                <Progress value={d.convert_percent ?? 0} />
+                <p className="card-sub mt-8">
+                  {d.convert_phase || "处理中"} · {d.convert_done}/{d.convert_total} · {d.convert_percent ?? 0}%
+                </p>
+              </>
+            ) : d.convert_status === "FAILED" ? (
+              <p className="card-sub" style={{ color: "var(--danger)" }}>转换失败：{d.convert_error || "未知错误"}</p>
+            ) : d.convert_status === "PARTIAL" ? (
+              <p className="card-sub">部分完成：{d.total_items - d.convert_failed_count}/{d.total_items} 条成功，{d.convert_failed_count} 条失败（失败项以空物料占位保留）。</p>
+            ) : (
+              <p className="card-sub">全部 {d.total_items} 条 mid 物料已解析完成。</p>
+            )}
+          </div>
+        </section>
+      ) : null}
 
       <div className="grid-2">
         <section className="card">

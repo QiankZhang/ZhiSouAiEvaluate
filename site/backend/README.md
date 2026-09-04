@@ -45,8 +45,23 @@ FastAPI 服务，业务状态跑在内存字典里（`_tasks`/`_benchmarks`/`_da
 | `LLM_DAILY_CALL_LIMIT` | `1000` | 网关日调用次数上限，用于额度提示与本地兜底计数 |
 | `JUDGE_ENGINE` | `auto` | `auto`（模型在网关可用列表内则真实调用）/ `simulated` / `agent`（强制真实） |
 | `JUDGE_CONCURRENCY` | `4` | 真实调用并发度 |
+| `WEIBO_QINGLONG_DIR` | `/data1/minisearch/upload/qinglong` | 博文数据集：qinglong 流水线仓库目录（见 `weibo.py`） |
+| `WEIBO_QINGLONG_PYTHON` | `python3` | qinglong 用的 Python 解释器（需装 aiohttp/redis/pandas/tqdm，能访问新浪内网） |
+| `WEIBO_CONVERT_CONCURRENCY` | `10` | mid → 物料抓取并发度 |
+| `WEIBO_CONVERT_TIMEOUT_SEC` | `3600` | 单阶段子进程超时 |
+| `WEIBO_MID_MAX` | `2000` | 单个博文数据集最多 mid 数 |
+| `WEIBO_CONVERT_STUB` | — | 置 `1` 跳过真实转换、用占位物料（无内网联调用） |
 
 前端顶部导航栏展示当日调用额度（`GET /api/quota`，优先取网关 `/v1/quota`，不可达回退本地计数）。
+
+## 博文数据集（mid → 原始物料）
+
+创建数据集 / 人工标注任务时勾选「博文数据」，上传两列 `mid,智搜结果`。后端把 mid 写临时 txt，
+子进程调 `qinglong` 流水线（`bin.make_data` 抓物料 → `bin.process_data` 补图片分析），回读逐行
+追加的 jsonl 感知进度；物料按分段标题块拼进样本 `query`，`智搜结果` 落 `content`，评估方式固定
+`MULTI_DIM`。转换期间数据集 `status=CONVERTING`，`GET /api/datasets/{id}/convert-progress` 查进度；
+部分失败以空物料占位保留（`convert_status=PARTIAL`），`POST .../retry-conversion` 仅重试失败 mid，
+`GET .../failed-mids` 下载失败清单。qinglong 依赖隔离在它自己的 Python 环境里，见 `weibo.py`。
 
 失败率熔断：真实调用下已完成 ≥10 条且 FAILED 占比 >20% 时，剩余条目自动降级为模拟，任务不整体失败。
 
