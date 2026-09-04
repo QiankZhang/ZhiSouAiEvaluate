@@ -20,11 +20,15 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
-# 先装依赖，利用镜像层缓存（requirements 不变则跳过重装）
+# 主依赖：这一层与历史构建字节一致，命中已有镜像层缓存（目标机常拉不到 PyPI）
 COPY site/requirements.txt /app/site/requirements.txt
+RUN pip install ${PIP_INDEX_URL:+--index-url $PIP_INDEX_URL} -r /app/site/requirements.txt
+
+# 博文数据集依赖（aiohttp/redis/pandas/tqdm/requests）：全部走仓库内离线 wheels，
+# 不碰外网——目标机 PyPI 不可达也能构建。wheels 是 linux cp311 manylinux 轮子。
 COPY site/deploy/requirements-weibo.txt /app/site/deploy/requirements-weibo.txt
-RUN pip install ${PIP_INDEX_URL:+--index-url $PIP_INDEX_URL} -r /app/site/requirements.txt \
- && pip install ${PIP_INDEX_URL:+--index-url $PIP_INDEX_URL} -r /app/site/deploy/requirements-weibo.txt
+COPY site/deploy/vendor/wheels-weibo /app/wheels-weibo
+RUN pip install --no-index --find-links=/app/wheels-weibo -r /app/site/deploy/requirements-weibo.txt
 
 # 应用代码 + 内置技能 + 已构建前端（site/frontend/dist 由 deploy 分支带入）
 COPY site /app/site

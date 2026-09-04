@@ -22,7 +22,9 @@ venv
 
 # 部署产物 / 离线依赖 / 发布包
 /dist
-site/deploy/vendor
+# make-release.sh 管理的离线 wheels 不进镜像构建上下文；
+# 但博文数据集的 wheels-weibo 需要进（Dockerfile 离线安装用）
+site/deploy/vendor/wheels
 
 # 运行时数据与密钥（绝不进镜像；数据走 volume 挂载）
 site/backend/.env
