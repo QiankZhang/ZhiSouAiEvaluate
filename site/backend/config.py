@@ -95,6 +95,19 @@ REQ_PER_SEC = _get_float("REQ_PER_SEC", 8.0)
 # ---- 持久化（SQLite，进程重启不丢数据，见 db.py）----
 DB_PATH = Path(_get("DB_PATH", str(_BACKEND_DIR / "data" / "app.db")))
 
+# ---- 博文数据集：mid → 原始物料（qinglong 流水线，见 weibo.py）----
+# 后端把 mid 列表写临时 txt，子进程调 qinglong 的 bin.make_data / bin.process_data，
+# 回读逐行追加的 jsonl 感知进度。qinglong 依赖新浪内网（hbase/redis/内容接口），
+# 与后端刻意精简的依赖隔离在各自的 Python 环境里。
+WEIBO_QINGLONG_DIR = _get("WEIBO_QINGLONG_DIR", str(_REPO_ROOT.parent / "qinglong"))
+WEIBO_QINGLONG_PYTHON = _get("WEIBO_QINGLONG_PYTHON", "python3")
+WEIBO_QINGLONG_BASE_PATH = _get("WEIBO_QINGLONG_BASE_PATH", "")  # 传给 qinglong 的 QINGLONG_BASE_PATH，空则用其自带默认
+WEIBO_CONVERT_CONCURRENCY = max(1, _get_int("WEIBO_CONVERT_CONCURRENCY", 10))
+WEIBO_CONVERT_TIMEOUT_SEC = _get_int("WEIBO_CONVERT_TIMEOUT_SEC", 3600)
+WEIBO_MID_MAX = _get_int("WEIBO_MID_MAX", 2000)  # 单个博文数据集最多 mid 数
+# 关闭真实转换、直接用占位物料（本地/无内网联调用）
+WEIBO_CONVERT_STUB = _get("WEIBO_CONVERT_STUB", "").lower() in {"1", "true", "yes"}
+
 
 def engine_for(model: str) -> str:
     """返回该裁判员模型实际应使用的引擎：'agent' 或 'simulated'。
