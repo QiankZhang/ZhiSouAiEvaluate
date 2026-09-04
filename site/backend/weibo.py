@@ -238,10 +238,11 @@ def _pipeline(mids: list[str], progress_cb: Optional[ProgressCb], log) -> dict[s
             "QINGLONG_SOURCE": str(src),
             "QINGLONG_TARGET": str(stage1),
             "QINGLONG_CONCURRENCY": str(config.WEIBO_CONVERT_CONCURRENCY),
+            # qinglong 里 domain.txt 等相对资源以 BASE_PATH 定位，默认写死 /data1/...；
+            # 指到 qinglong 目录本身，容器/开发机都能找到 config/domain.txt
+            "QINGLONG_BASE_PATH": config.WEIBO_QINGLONG_BASE_PATH or qinglong_dir,
             "PYTHONUNBUFFERED": "1",
         }
-        if config.WEIBO_QINGLONG_BASE_PATH:
-            base_env["QINGLONG_BASE_PATH"] = config.WEIBO_QINGLONG_BASE_PATH
 
         py = config.WEIBO_QINGLONG_PYTHON
         _run_step(
