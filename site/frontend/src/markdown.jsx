@@ -4,6 +4,59 @@ import React from "react";
 // （标题 / 段落 / 有序无序列表 / 表格 / 引用 / 分隔线 / 代码块 + 行内 加粗 / 斜体 / 代码 / 链接）。
 // 刻意不引第三方依赖（见 CLAUDE.md：优先标准能力、控制依赖）。
 
+// 智搜结果 / 标注内容里常见的媒体标记：整行 `[图片] <url>` 或 `[视频]：<url>`。
+// URL 多为新浪图床（无扩展名），[视频] 给的往往是封面帧而非可播放文件，故默认按图片渲染。
+const MEDIA_RE = /^\s*\[\s*(图片|图|图像|视频|image|img|video)\s*\]\s*[:：]?\s*(https?:\/\/\S+?)\s*$/i;
+const VIDEO_FILE_RE = /\.(mp4|m3u8|mov|webm)(\?|#|$)/i;
+
+function isVideoMarker(label) {
+  return /视频|video/i.test(label);
+}
+
+function MediaItem({ item }) {
+  const [failed, setFailed] = React.useState(false);
+  if (failed) {
+    return (
+      <a className="md-media-fallback" href={item.url} target="_blank" rel="noreferrer noopener">
+        {item.kind === "video" ? "🎬 视频" : "🖼 图片"}：{item.url}
+      </a>
+    );
+  }
+  if (item.kind === "video" && VIDEO_FILE_RE.test(item.url)) {
+    return (
+      <video className="md-media-el" src={item.url} controls preload="metadata" onError={() => setFailed(true)} />
+    );
+  }
+  return (
+    <a
+      className={`md-media-item${item.kind === "video" ? " is-video" : ""}`}
+      href={item.url}
+      target="_blank"
+      rel="noreferrer noopener"
+      title={item.kind === "video" ? "视频封面，点击打开原链接" : "点击查看大图"}
+    >
+      <img
+        className="md-media-el"
+        src={item.url}
+        alt={item.kind === "video" ? "视频封面" : "图片"}
+        loading="lazy"
+        onError={() => setFailed(true)}
+      />
+      {item.kind === "video" ? <span className="md-media-badge">▶ 视频</span> : null}
+    </a>
+  );
+}
+
+function MediaBlock({ items }) {
+  return (
+    <div className={`md-media${items.length === 1 ? " is-single" : ""}`}>
+      {items.map((it, idx) => (
+        <MediaItem key={idx} item={it} />
+      ))}
+    </div>
+  );
+}
+
 function renderInline(text, keyPrefix) {
   // 依次匹配：行内代码 `x`、加粗 **x**、斜体 *x* / _x_、链接 [t](u)
   const pattern = /(`[^`]+`|\*\*[^*]+\*\*|\*[^*\n]+\*|_[^_\n]+_|\[[^\]]+\]\([^)\s]+\))/g;
@@ -70,6 +123,19 @@ export function Markdown({ source }) {
       }
       i += 1;
       blocks.push(<pre key={k++} className="md-pre"><code>{buf.join("\n")}</code></pre>);
+      continue;
+    }
+
+    // 媒体标记：连续的 [图片]/[视频] 行合并成一个媒体块
+    if (MEDIA_RE.test(line)) {
+      const items = [];
+      while (i < lines.length) {
+        const m = MEDIA_RE.exec(lines[i]);
+        if (!m) break;
+        items.push({ kind: isVideoMarker(m[1]) ? "video" : "image", url: m[2] });
+        i += 1;
+      }
+      blocks.push(<MediaBlock key={k++} items={items} />);
       continue;
     }
 
@@ -164,6 +230,7 @@ export function Markdown({ source }) {
       i < lines.length &&
       lines[i].trim() &&
       !/^(#{1,6}\s|\s*>\s?|\s*([-*+]|\d+[.)])\s|```)/.test(lines[i]) &&
+      !MEDIA_RE.test(lines[i]) &&
       !(lines[i].includes("|") && i + 1 < lines.length && isTableSeparator(lines[i + 1]))
     ) {
       buf.push(lines[i]);
