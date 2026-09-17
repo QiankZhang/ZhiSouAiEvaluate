@@ -290,6 +290,7 @@ function CreateManualTaskModal({ open, onClose, onCreated, reportTemplates, mode
   const [message, setMessage] = useState("");
   const [errors, setErrors] = useState([]);
   const [isWeibo, setIsWeibo] = useState(false);
+  const [weiboMode, setWeiboMode] = useState("material");
 
   const liveModels = (models || []).filter((m) => m.live);
 
@@ -310,6 +311,7 @@ function CreateManualTaskModal({ open, onClose, onCreated, reportTemplates, mode
     setMessage("");
     setErrors([]);
     setIsWeibo(false);
+    setWeiboMode("material");
   }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
@@ -328,7 +330,8 @@ function CreateManualTaskModal({ open, onClose, onCreated, reportTemplates, mode
 
   function downloadTemplate() {
     if (isWeibo) {
-      downloadFile(`/api/datasets/template?weibo=1`, "博文数据集模板.csv").catch((e) => toast.error(e.message));
+      const filename = weiboMode === "qa" ? "博文问答数据集模板.csv" : "博文数据集模板.csv";
+      downloadFile(`/api/datasets/template?weibo=1&weibo_mode=${weiboMode}`, filename).catch((e) => toast.error(e.message));
       return;
     }
     downloadFile(`/api/manual-tasks/template?annotate_type=${type}`, "标注模板.csv").catch((e) => toast.error(e.message));
@@ -356,6 +359,7 @@ function CreateManualTaskModal({ open, onClose, onCreated, reportTemplates, mode
       fd.append("report_template_id", reportTemplateId);
       fd.append("report_model", reportModel);
       fd.append("is_weibo", isWeibo ? "true" : "false");
+      fd.append("weibo_mode", weiboMode);
       fd.append("file", file);
       const created = await api.upload("/api/manual-tasks/upload", fd);
       toast.success(isWeibo ? "任务已创建，正在解析 mid 物料…" : "标注任务已创建");
@@ -408,11 +412,26 @@ function CreateManualTaskModal({ open, onClose, onCreated, reportTemplates, mode
       </Field>
 
       {type === "MULTI_DIM" ? (
-        <Field label="博文数据" hint="勾选后上传「mid、智搜结果」两列；按 mid 解析原始博文/图片/视频物料转为文本，query=物料，content=智搜结果">
+        <Field label="博文数据" hint="勾选后按 mid 解析原始博文/图片/视频物料">
           <label className="inline" style={{ gap: 8, cursor: "pointer" }}>
             <input type="checkbox" checked={isWeibo} onChange={(e) => setIsWeibo(e.target.checked)} />
             <span>将 mid 转换为原始物料</span>
           </label>
+        </Field>
+      ) : null}
+
+      {type === "MULTI_DIM" && isWeibo ? (
+        <Field label="物料用途" required hint="决定上传文件的列 + 物料怎么参与评估">
+          <div className="option-cards">
+            <div className={`option-card${weiboMode === "material" ? " selected" : ""}`} onClick={() => setWeiboMode("material")}>
+              <div className="option-card-title">📄 物料生成问题</div>
+              <div className="option-card-desc">上传 mid、智搜结果；物料解析结果直接作为 query</div>
+            </div>
+            <div className={`option-card${weiboMode === "qa" ? " selected" : ""}`} onClick={() => setWeiboMode("qa")}>
+              <div className="option-card-title">💬 现成问答，物料补充上下文</div>
+              <div className="option-card-desc">上传 mid、query、内容；物料 + query 拼成完整 query，content 是待评回答</div>
+            </div>
+          </div>
         </Field>
       ) : null}
 
@@ -445,7 +464,9 @@ function CreateManualTaskModal({ open, onClose, onCreated, reportTemplates, mode
         required
         hint={
           isWeibo
-            ? "两列：mid、智搜结果 · CSV / JSON / JSONL / XLSX"
+            ? weiboMode === "qa"
+              ? "三列：mid、query、内容 · CSV / JSON / JSONL / XLSX"
+              : "两列：mid、智搜结果 · CSV / JSON / JSONL / XLSX"
             : type === "CONVERSATION"
               ? "JSONL / JSON / CSV，按 session_id 分组"
               : type === "INTENT"

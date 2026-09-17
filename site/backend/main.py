@@ -63,7 +63,9 @@ COLUMN_ALIASES = {
 # 博文数据集：上传两列 —— mid + 智搜结果；mid 经 qinglong 流水线转成原始物料后落 query
 WEIBO_COLUMN_ALIASES = {
     "mid": {"mid", "微博mid", "博文mid", "blogid", "id", "weibomid"},
-    "content": {"智搜结果", "智搜结果数据", "智搜", "content", "searchresult", "result", "回答", "答案", "zhisou"},
+    "content": {"智搜结果", "智搜结果数据", "智搜", "content", "内容", "searchresult", "result", "回答", "回复", "答案", "zhisou"},
+    # 现成问答模式（weibo_mode=qa）专用：mid 对应博文的用户提问，与解析出的物料一起构成评估用的完整 query
+    "query": {"query", "问题", "查询", "提问", "追问", "prompt", "question", "q"},
 }
 
 
@@ -656,7 +658,7 @@ def _tasks_using_benchmark(benchmark_id: str) -> list[dict[str, Any]]:
 
 def _dataset_to_csv(dataset: dict[str, Any]) -> str:
     if dataset.get("is_weibo"):
-        fieldnames = ["row_index", "mid", "material_status", "query", "content"]
+        fieldnames = ["row_index", "mid", "asked_query", "material_status", "query", "content"]
     else:
         fieldnames = ["row_index", "query", "content"] + (["baseline"] if dataset["eval_method"] == "GSB" else [])
     buf = io.StringIO()
@@ -776,8 +778,15 @@ def _parse_upload_rows(raw: bytes, filename: str, eval_method: str) -> tuple[lis
     return valid_rows, errors
 
 
-def _parse_weibo_upload_rows(raw: bytes, filename: str) -> tuple[list[dict[str, str]], list[dict[str, Any]]]:
-    """解析博文数据集上传：两列 mid + 智搜结果。复用通用多格式解析，仅换字段识别规则。"""
+def _parse_weibo_upload_rows(
+    raw: bytes, filename: str, with_query: bool = False
+) -> tuple[list[dict[str, str]], list[dict[str, Any]]]:
+    """解析博文数据集上传。复用通用多格式解析，仅换字段识别规则。
+    with_query=False（weibo_mode=material）：两列 mid + 智搜结果，智搜结果落 content，mid 解析出的物料另落 query。
+    with_query=True（weibo_mode=qa）：三列 mid + query + content——文件里已有现成问答，
+    mid 解析出的物料会和这里的 query 拼接成评估用的完整 query（见 weibo.convert_rows）。"""
+    fields: tuple[str, ...] = ("mid", "query", "content") if with_query else ("mid", "content")
+    col_hint = "「mid,query,内容」三列" if with_query else "「mid,智搜结果」两列"
     lower = (filename or "").lower()
     errors: list[dict[str, Any]] = []
     raw_rows: list[tuple[int, dict[str, Any]]] = []
@@ -788,7 +797,7 @@ def _parse_weibo_upload_rows(raw: bytes, filename: str) -> tuple[list[dict[str, 
         except Exception as exc:  # noqa: BLE001
             return [], [{"line": 0, "message": f"Excel 文件解析失败（{exc}）"}]
         if not header:
-            return [], [{"line": 1, "message": "未识别到表头，请使用「mid,智搜结果」两列"}]
+            return [], [{"line": 1, "message": f"未识别到表头，请使用{col_hint}"}]
         for i, row in enumerate(data_rows, start=2):
             raw_rows.append((i, {header[j]: ("" if j >= len(row) or row[j] is None else str(row[j])) for j in range(len(header))}))
     elif lower.endswith(".xls"):
@@ -817,7 +826,7 @@ def _parse_weibo_upload_rows(raw: bytes, filename: str) -> tuple[list[dict[str, 
         elif lower.endswith(".csv"):
             reader = csv.DictReader(io.StringIO(text))
             if not reader.fieldnames:
-                return [], [{"line": 1, "message": "未识别到表头，请使用「mid,智搜结果」两列"}]
+                return [], [{"line": 1, "message": f"未识别到表头，请使用{col_hint}"}]
             for i, row in enumerate(reader, start=2):
                 raw_rows.append((i, row))
         else:
@@ -826,31 +835,38 @@ def _parse_weibo_upload_rows(raw: bytes, filename: str) -> tuple[list[dict[str, 
     if not raw_rows and not errors:
         return [], [{"line": 0, "message": "文件中没有可用数据行"}]
 
-    field_map = _resolve_weibo_field_map(list(raw_rows[0][1].keys()) if raw_rows else [])
+    field_map = _resolve_weibo_field_map(list(raw_rows[0][1].keys()) if raw_rows else [], fields)
     rows: list[dict[str, str]] = []
     for line_no, row in raw_rows:
         mid = str(row.get(field_map.get("mid", ""), "") or "").strip()
         content = str(row.get(field_map.get("content", ""), "") or "").strip()
+        query = str(row.get(field_map.get("query", ""), "") or "").strip() if with_query else ""
         if not mid:
             errors.append({"line": line_no, "message": "缺少 mid"})
             continue
-        rows.append({"mid": mid, "content": content})
+        if with_query and not query:
+            errors.append({"line": line_no, "message": "缺少 query"})
+            continue
+        row_out = {"mid": mid, "content": content}
+        if with_query:
+            row_out["query"] = query
+        rows.append(row_out)
     return rows, errors
 
 
-def _resolve_weibo_field_map(keys: list[str]) -> dict[str, str]:
+def _resolve_weibo_field_map(keys: list[str], fields: tuple[str, ...] = ("mid", "content")) -> dict[str, str]:
     norm_alias = {c: {_normalize_col(a) for a in al} for c, al in WEIBO_COLUMN_ALIASES.items()}
     field_map: dict[str, str] = {}
     used: set[str] = set()
     for key in keys:
         norm = _normalize_col(key)
-        for canon in ("mid", "content"):
+        for canon in fields:
             if canon not in field_map and (norm == canon or norm in norm_alias[canon]):
                 field_map[canon] = key
                 used.add(key)
                 break
     leftover = [k for k in keys if k not in used]
-    for canon in ("mid", "content"):
+    for canon in fields:
         if canon not in field_map and leftover:
             field_map[canon] = leftover.pop(0)
     return field_map
@@ -1271,11 +1287,21 @@ _WEIBO_TEMPLATE_ROWS = [
     {"mid": "5031234567890123", "智搜结果": "示例：这里填写该 mid 对应的智搜结果原文（待评内容）。"},
     {"mid": "5039876543210987", "智搜结果": "示例：第二条智搜结果。"},
 ]
+_WEIBO_QA_TEMPLATE_ROWS = [
+    {"mid": "5031234567890123", "query": "示例：针对该博文的提问。", "内容": "示例：这里填写针对该提问的回答（待评内容）。"},
+    {"mid": "5039876543210987", "query": "示例：第二条提问。", "内容": "示例：第二条回答。"},
+]
 
 
 @app.get("/api/datasets/template")
-def dataset_template(eval_method: str = "MULTI_DIM", weibo: int = 0) -> Response:
-    if weibo:
+def dataset_template(eval_method: str = "MULTI_DIM", weibo: int = 0, weibo_mode: str = "material") -> Response:
+    if weibo and weibo_mode == "qa":
+        buf = io.StringIO()
+        writer = csv.DictWriter(buf, fieldnames=["mid", "query", "内容"])
+        writer.writeheader()
+        writer.writerows(_WEIBO_QA_TEMPLATE_ROWS)
+        csv_text, filename = buf.getvalue(), "博文问答数据集模板.csv"
+    elif weibo:
         buf = io.StringIO()
         writer = csv.DictWriter(buf, fieldnames=["mid", "智搜结果"])
         writer.writeheader()
@@ -1298,6 +1324,7 @@ async def upload_dataset(
     eval_method: str = Form("MULTI_DIM"),
     eval_method_label: str = Form(""),
     is_weibo: bool = Form(False),
+    weibo_mode: str = Form("material"),
     file: UploadFile = File(...),
 ) -> dict[str, Any]:
     if not name.strip():
@@ -1310,7 +1337,7 @@ async def upload_dataset(
     fmt = (file.filename or "").rsplit(".", 1)[-1].upper() if "." in (file.filename or "") else "CSV"
 
     if is_weibo:
-        return _create_weibo_dataset(name, description, fmt, raw, file.filename or "")
+        return _create_weibo_dataset(name, description, fmt, raw, file.filename or "", weibo_mode)
 
     rows, errors = _parse_upload_rows(raw, file.filename or "", eval_method)
     if errors:
@@ -1343,9 +1370,16 @@ async def upload_dataset(
     return _dataset_out(dataset)
 
 
-def _create_weibo_dataset(name: str, description: str, fmt: str, raw: bytes, filename: str) -> dict[str, Any]:
-    """博文数据集：解析 mid + 智搜结果 → 建 CONVERTING 数据集 → 起后台线程调 qinglong 转物料。"""
-    rows, errors = _parse_weibo_upload_rows(raw, filename)
+def _create_weibo_dataset(
+    name: str, description: str, fmt: str, raw: bytes, filename: str, weibo_mode: str = "material"
+) -> dict[str, Any]:
+    """博文数据集：起 CONVERTING 数据集 → 后台线程调 qinglong 转物料。
+    weibo_mode=material：两列 mid + 智搜结果，物料解析结果落 query。
+    weibo_mode=qa：三列 mid + query + content——文件已有现成问答，物料会和这里的 query 拼接成最终 query。"""
+    if weibo_mode not in ("material", "qa"):
+        raise HTTPException(status_code=400, detail="weibo_mode 只能是 material 或 qa")
+    with_query = weibo_mode == "qa"
+    rows, errors = _parse_weibo_upload_rows(raw, filename, with_query=with_query)
     if errors:
         raise HTTPException(status_code=422, detail={"message": "文件校验未通过，请修正后重新上传", "errors": errors[:50]})
     valid, invalid = weibo.normalize_mids([r["mid"] for r in rows])
@@ -1359,16 +1393,19 @@ def _create_weibo_dataset(name: str, description: str, fmt: str, raw: bytes, fil
     if len(valid) > config.WEIBO_MID_MAX:
         raise HTTPException(status_code=422, detail={"message": f"mid 数超过上限（{config.WEIBO_MID_MAX}）", "errors": []})
 
-    # 去重后按首次出现顺序保留对应的智搜结果
-    content_by_mid: dict[str, str] = {}
+    # 去重后按首次出现顺序保留对应的 content（qa 模式下还有 query）
+    row_by_mid: dict[str, dict[str, str]] = {}
     for r in rows:
-        content_by_mid.setdefault(r["mid"], r.get("content", ""))
-    mids_rows = [{"mid": m, "content": content_by_mid.get(m, "")} for m in valid]
+        row_by_mid.setdefault(r["mid"], r)
+    mids_rows = [
+        {"mid": m, "content": row_by_mid[m].get("content", ""), "query": row_by_mid[m].get("query", "")}
+        for m in valid
+    ]
 
     did = _next_id("DS")
     samples = [
         {"id": f"item-{i + 1}", "row_index": i + 1, "mid": m["mid"], "query": "", "content": m["content"],
-         "baseline": "", "material_status": "PENDING", "material_meta": {}}
+         "asked_query": m["query"], "baseline": "", "material_status": "PENDING", "material_meta": {}}
         for i, m in enumerate(mids_rows)
     ]
     dataset = {
@@ -1377,6 +1414,7 @@ def _create_weibo_dataset(name: str, description: str, fmt: str, raw: bytes, fil
         "description": description,
         "source": "WEIBO_MID",
         "is_weibo": True,
+        "weibo_mode": weibo_mode,
         "eval_method": "MULTI_DIM",
         "eval_method_label": "",
         "format": fmt,
@@ -1434,11 +1472,11 @@ def retry_dataset_conversion(dataset_id: str) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail="仅部分失败 / 转换失败的数据集可重试")
 
     if d.get("convert_status") == "FAILED":
-        retry_mids = [{"mid": s["mid"], "content": s.get("content", "")} for s in d["samples"]]
+        retry_mids = [{"mid": s["mid"], "content": s.get("content", ""), "query": s.get("asked_query", "")} for s in d["samples"]]
     else:
         failed_idx = {f["row_index"] for f in (d.get("convert_failed") or [])}
         retry_mids = [
-            {"mid": s["mid"], "content": s.get("content", "")}
+            {"mid": s["mid"], "content": s.get("content", ""), "query": s.get("asked_query", "")}
             for s in d["samples"] if s["row_index"] in failed_idx
         ]
     if not retry_mids:
