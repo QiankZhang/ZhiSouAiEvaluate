@@ -1651,8 +1651,32 @@ export function TaskReportPage({ id, navigate }) {
 
 /* ---------------- 数据集 ---------------- */
 
-function ExamplePreview({ rows, evalMethod, weibo }) {
+function ExamplePreview({ rows, evalMethod, weibo, weiboMode }) {
   if (!rows) return null;
+  if (weibo && weiboMode === "qa") {
+    return (
+      <div className="table-wrap mt-8">
+        <table className="table">
+          <thead>
+            <tr>
+              <th>mid</th>
+              <th>query</th>
+              <th>内容</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r, i) => (
+              <tr key={i}>
+                <td>{r.mid}</td>
+                <td>{r.query}</td>
+                <td>{r["内容"]}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    );
+  }
   if (weibo) {
     return (
       <div className="table-wrap mt-8">
@@ -1714,6 +1738,7 @@ function CreateDatasetModal({ open, onClose, onCreated, methodOptions }) {
   const [exampleRows, setExampleRows] = useState(null);
   const [showExample, setShowExample] = useState(false);
   const [isWeibo, setIsWeibo] = useState(false);
+  const [weiboMode, setWeiboMode] = useState("material");
 
   const allMethodOptions = useMemo(() => {
     const map = new Map();
@@ -1740,6 +1765,7 @@ function CreateDatasetModal({ open, onClose, onCreated, methodOptions }) {
     setExampleRows(null);
     setShowExample(false);
     setIsWeibo(false);
+    setWeiboMode("material");
   }, [open]);
 
   useEffect(() => {
@@ -1747,7 +1773,7 @@ function CreateDatasetModal({ open, onClose, onCreated, methodOptions }) {
     setShowExample(false);
     setFile(null);
     setErrors([]);
-  }, [mechanism, isWeibo]);
+  }, [mechanism, isWeibo, weiboMode]);
 
   // 博文数据仅支持多维度评估
   useEffect(() => {
@@ -1786,7 +1812,7 @@ function CreateDatasetModal({ open, onClose, onCreated, methodOptions }) {
       return;
     }
     try {
-      const qs = isWeibo ? "weibo=1" : `eval_method=${mechanism}`;
+      const qs = isWeibo ? `weibo=1&weibo_mode=${weiboMode}` : `eval_method=${mechanism}`;
       const res = await fetch(`/api/datasets/template?${qs}`);
       const text = await res.text();
       const lines = text.trim().split("\n");
@@ -1803,8 +1829,9 @@ function CreateDatasetModal({ open, onClose, onCreated, methodOptions }) {
   }
 
   function downloadTemplate() {
-    const qs = isWeibo ? "weibo=1" : `eval_method=${mechanism}`;
-    downloadFile(`/api/datasets/template?${qs}`, isWeibo ? "博文数据集模板.csv" : "数据集模板.csv").catch((err) => toast.error(err.message));
+    const qs = isWeibo ? `weibo=1&weibo_mode=${weiboMode}` : `eval_method=${mechanism}`;
+    const filename = isWeibo ? (weiboMode === "qa" ? "博文问答数据集模板.csv" : "博文数据集模板.csv") : "数据集模板.csv";
+    downloadFile(`/api/datasets/template?${qs}`, filename).catch((err) => toast.error(err.message));
   }
 
   async function submit() {
@@ -1827,6 +1854,7 @@ function CreateDatasetModal({ open, onClose, onCreated, methodOptions }) {
       fd.append("eval_method", isWeibo ? "MULTI_DIM" : mechanism);
       fd.append("eval_method_label", isWeibo || methodLabel === defaultLabel ? "" : methodLabel);
       fd.append("is_weibo", isWeibo ? "true" : "false");
+      fd.append("weibo_mode", weiboMode);
       fd.append("file", file);
       const created = await api.upload("/api/datasets/upload", fd);
       toast.success(isWeibo ? "数据集已创建，正在解析 mid 物料…" : "数据集已创建");
@@ -1865,7 +1893,7 @@ function CreateDatasetModal({ open, onClose, onCreated, methodOptions }) {
         <textarea className="textarea" value={description} onChange={(e) => setDescription(e.target.value)} placeholder="说明数据集用途与范围" maxLength={200} />
       </Field>
 
-      <Field label="博文数据" hint="勾选后上传两列「mid、智搜结果」；导入后按 mid 解析原始博文、图片、视频等物料转为文本，仅支持多维度评估">
+      <Field label="博文数据" hint="勾选后按 mid 解析原始博文、图片、视频等物料，仅支持多维度评估">
         <label className="inline" style={{ gap: 8, cursor: "pointer" }}>
           <input type="checkbox" checked={isWeibo} onChange={(e) => setIsWeibo(e.target.checked)} />
           <span>将 mid 转换为原始物料</span>
@@ -1873,8 +1901,25 @@ function CreateDatasetModal({ open, onClose, onCreated, methodOptions }) {
       </Field>
 
       {isWeibo ? (
+        <Field label="物料用途" required hint="决定上传文件的列 + 物料怎么参与评估">
+          <div className="option-cards">
+            <div className={`option-card${weiboMode === "material" ? " selected" : ""}`} onClick={() => setWeiboMode("material")}>
+              <div className="option-card-title">📄 物料生成问题</div>
+              <div className="option-card-desc">上传 mid、智搜结果；物料解析结果直接作为 query</div>
+            </div>
+            <div className={`option-card${weiboMode === "qa" ? " selected" : ""}`} onClick={() => setWeiboMode("qa")}>
+              <div className="option-card-title">💬 现成问答，物料补充上下文</div>
+              <div className="option-card-desc">上传 mid、query、内容；物料 + query 拼成完整 query，content 是待评回答</div>
+            </div>
+          </div>
+        </Field>
+      ) : null}
+
+      {isWeibo ? (
         <Field label="评估方式">
-          <div className="text-tertiary" style={{ fontSize: 13 }}>博文数据固定使用「多维度」评估（query = 解析出的物料，content = 智搜结果）</div>
+          <div className="text-tertiary" style={{ fontSize: 13 }}>
+            博文数据固定使用「多维度」评估（{weiboMode === "qa" ? "query = 物料 + 文件里的 query，content = 文件里的回答" : "query = 解析出的物料，content = 智搜结果"}）
+          </div>
         </Field>
       ) : (
         <Field label="评估方式" required hint="决定数据集必需列：多维度机制需要 query/content；GSB 机制额外需要 baseline">
@@ -1925,7 +1970,7 @@ function CreateDatasetModal({ open, onClose, onCreated, methodOptions }) {
           {showExample ? "收起样例" : "查看数据集样例"}
         </Button>
       </div>
-      {showExample ? <ExamplePreview rows={exampleRows} evalMethod={mechanism} weibo={isWeibo} /> : null}
+      {showExample ? <ExamplePreview rows={exampleRows} evalMethod={mechanism} weibo={isWeibo} weiboMode={weiboMode} /> : null}
       <Dropzone
         accept=".csv,.json,.jsonl,.xlsx"
         onFile={(f) => {
@@ -1933,7 +1978,13 @@ function CreateDatasetModal({ open, onClose, onCreated, methodOptions }) {
           setErrors([]);
           setMessage("");
         }}
-        hint={isWeibo ? "两列：mid、智搜结果 · CSV / JSON / JSONL / XLSX · ≤ 50MB" : "支持 CSV / JSON / JSONL / XLSX，单文件 ≤ 50MB"}
+        hint={
+          isWeibo
+            ? weiboMode === "qa"
+              ? "三列：mid、query、内容 · CSV / JSON / JSONL / XLSX · ≤ 50MB"
+              : "两列：mid、智搜结果 · CSV / JSON / JSONL / XLSX · ≤ 50MB"
+            : "支持 CSV / JSON / JSONL / XLSX，单文件 ≤ 50MB"
+        }
       />
       {errors.length > 0 ? (
         <div className="error-list">
@@ -2197,11 +2248,13 @@ export function DatasetDetailPage({ id, navigate }) {
     }
   }
 
+  const isWeiboQa = d.is_weibo && d.weibo_mode === "qa";
   const sampleColumns = [
     { key: "row_index", title: "#", width: 52 },
     ...(d.is_weibo ? [{ key: "mid", title: "mid", width: 150, render: (s) => <span className="mono">{s.mid}</span> }] : []),
-    { key: "query", title: d.is_weibo ? "物料（Query）" : "Query" },
-    { key: "content", title: d.is_weibo ? "智搜结果（待评）" : "待评内容" },
+    ...(isWeiboQa ? [{ key: "asked_query", title: "用户问题" }] : []),
+    { key: "query", title: d.is_weibo ? (isWeiboQa ? "物料+问题（Query）" : "物料（Query）") : "Query" },
+    { key: "content", title: d.is_weibo ? (isWeiboQa ? "回答（待评）" : "智搜结果（待评）") : "待评内容" },
     ...(d.is_weibo
       ? [{
           key: "material_status",

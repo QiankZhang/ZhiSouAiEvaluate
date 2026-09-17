@@ -66,6 +66,47 @@ def test_convert_rows_partial_failure(monkeypatch):
     assert "未返回" in failed[1]["error"]  # 508888 pipeline 未返回
 
 
+def test_convert_rows_qa_mode_combines_material_and_asked_query(monkeypatch):
+    """weibo_mode=qa：mid 解析出的物料 + 文件里现成的 query 拼成评估用的最终 query，content 原样保留。"""
+    monkeypatch.setattr(weibo.config, "WEIBO_CONVERT_STUB", True)
+    rows = [{"mid": "5031234567890", "content": "来自XX剧", "query": "这些角色出自哪部作品"}]
+    samples, failed = weibo.convert_rows(rows)
+    assert failed == []
+    s = samples[0]
+    assert s["asked_query"] == "这些角色出自哪部作品"
+    assert s["content"] == "来自XX剧"
+    assert s["query"].startswith("【博文正文】")  # 物料在前
+    assert s["query"].endswith("【用户问题】这些角色出自哪部作品")  # 提问拼在后面
+
+
+def test_convert_rows_qa_mode_falls_back_to_query_when_material_empty(monkeypatch):
+    """物料解析失败时（qa 模式），最终 query 直接是原始提问，不留下孤零零的物料占位。"""
+    monkeypatch.setattr(weibo.config, "WEIBO_CONVERT_STUB", False)
+
+    def fake_pipeline(mids, progress_cb, log):
+        return {"5031234567890": {"mid": "5031234567890", "_error": "hbase 超时"}}
+
+    monkeypatch.setattr(weibo, "_pipeline", fake_pipeline)
+    rows = [{"mid": "5031234567890", "content": "回答", "query": "问题"}]
+    samples, failed = weibo.convert_rows(rows)
+    assert samples[0]["material_status"] == "FAILED"
+    assert samples[0]["query"] == "问题"
+    assert failed[0]["mid"] == "5031234567890"
+
+
+def test_convert_rows_material_mode_unaffected_by_query_field():
+    """未传 query（weibo_mode=material）时行为不变：query 就是物料本身。"""
+    with_stub = weibo.config.WEIBO_CONVERT_STUB
+    weibo.config.WEIBO_CONVERT_STUB = True
+    try:
+        rows = [{"mid": "5031234567890", "content": "智搜结果1"}]
+        samples, _ = weibo.convert_rows(rows)
+        assert samples[0]["asked_query"] == ""
+        assert "【用户问题】" not in samples[0]["query"]
+    finally:
+        weibo.config.WEIBO_CONVERT_STUB = with_stub
+
+
 def test_pipeline_missing_dir(monkeypatch, tmp_path):
     monkeypatch.setattr(weibo.config, "WEIBO_CONVERT_STUB", False)
     monkeypatch.setattr(weibo.config, "WEIBO_QINGLONG_DIR", str(tmp_path / "nope"))

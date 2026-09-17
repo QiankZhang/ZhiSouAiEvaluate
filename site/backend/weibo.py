@@ -293,9 +293,10 @@ def convert_rows(
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """mid 行 → 样本。
 
-    rows: [{"mid": "...", "content": "智搜结果原文"}]（按上传顺序）
+    rows: [{"mid": "...", "content": "智搜结果原文", "query": "现成提问（可选）"}]（按上传顺序）
     返回 (samples, failed)：
-      samples[i] = {id,row_index,mid,query(物料文本),content(智搜结果),material_status,material_meta}
+      samples[i] = {id,row_index,mid,query(评估用，物料+现成提问拼接),asked_query(原始提问，为空即纯物料模式),
+                     content,material_status,material_meta}
       failed[i]  = {mid,row_index,error}
     失败项以空 query 占位保留（用户确认策略）。
     """
@@ -317,12 +318,19 @@ def convert_rows(
         status = "OK" if material else "FAILED"
         if status == "FAILED":
             failed.append({"mid": mid, "row_index": i, "error": str(err or "解析失败")})
+        asked_query = (row.get("query") or "").strip()
+        # weibo_mode=qa：物料 + 文件里现成的提问拼成评估用 query；weibo_mode=material：query 就是物料本身
+        if asked_query:
+            final_query = f"{material}\n\n【用户问题】{asked_query}".strip() if material else asked_query
+        else:
+            final_query = material
         samples.append(
             {
                 "id": f"item-{i}",
                 "row_index": i,
                 "mid": mid,
-                "query": material,
+                "query": final_query,
+                "asked_query": asked_query,
                 "content": row.get("content", ""),
                 "baseline": "",
                 "material_status": status,

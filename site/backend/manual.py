@@ -535,12 +535,17 @@ def _refresh_progress(mt: dict[str, Any]) -> None:
 
 # ---------- 博文数据：mid → 物料 ----------
 
-def _build_weibo_units(raw: bytes, filename: str) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
-    """解析 mid + 智搜结果 → 占位多维度标注单元 + 待转换 mid 行。物料由后台线程回填 query。"""
+def _build_weibo_units(
+    raw: bytes, filename: str, weibo_mode: str = "material"
+) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
+    """解析上传文件 → 占位多维度标注单元 + 待转换 mid 行。物料由后台线程回填 query。
+    weibo_mode=material：mid + 智搜结果，物料落 query。
+    weibo_mode=qa：mid + query + content——文件已有现成问答，物料会和这里的 query 拼接成最终 query。"""
     parse = _ctx.get("parse_weibo_rows")
     if not parse:
         raise HTTPException(status_code=500, detail="博文解析未就绪")
-    rows, errors = parse(raw, filename)
+    with_query = weibo_mode == "qa"
+    rows, errors = parse(raw, filename, with_query)
     if errors:
         raise HTTPException(status_code=422, detail={"message": "文件校验未通过，请修正后重新上传", "errors": errors[:50]})
     valid, invalid = weibo.normalize_mids([r["mid"] for r in rows])
@@ -554,10 +559,13 @@ def _build_weibo_units(raw: bytes, filename: str) -> tuple[list[dict[str, Any]],
     if len(valid) > MAX_ROWS:
         raise HTTPException(status_code=422, detail={"message": f"mid 数超过上限（{MAX_ROWS} 条）", "errors": []})
 
-    content_by_mid: dict[str, str] = {}
+    row_by_mid: dict[str, dict[str, str]] = {}
     for r in rows:
-        content_by_mid.setdefault(r["mid"], r.get("content", ""))
-    mids_rows = [{"mid": m, "content": content_by_mid.get(m, "")} for m in valid]
+        row_by_mid.setdefault(r["mid"], r)
+    mids_rows = [
+        {"mid": m, "content": row_by_mid[m].get("content", ""), "query": row_by_mid[m].get("query", "")}
+        for m in valid
+    ]
 
     units = [
         {
@@ -565,6 +573,7 @@ def _build_weibo_units(raw: bytes, filename: str) -> tuple[list[dict[str, Any]],
             "index": i,
             "mid": m["mid"],
             "query": "",
+            "asked_query": m["query"],
             "content": m["content"],
             "material_status": "PENDING",
             "skipped": False,
@@ -700,6 +709,7 @@ async def upload_manual_task(
     report_template_id: str = Form(""),
     report_model: str = Form(""),
     is_weibo: str = Form("false"),
+    weibo_mode: str = Form("material"),
     file: UploadFile = File(...),
 ) -> dict[str, Any]:
     name = name.strip()
@@ -709,9 +719,11 @@ async def upload_manual_task(
         raise HTTPException(status_code=400, detail="不支持的标注类型")
     if any(m["name"] == name for m in _tasks()):
         raise HTTPException(status_code=400, detail="同名标注任务已存在，请更换名称")
-    weibo_mode = str(is_weibo).lower() == "true"
-    if weibo_mode and annotate_type != "MULTI_DIM":
+    weibo_on = str(is_weibo).lower() == "true"
+    if weibo_on and annotate_type != "MULTI_DIM":
         raise HTTPException(status_code=400, detail="博文数据目前仅支持多维度评估标注")
+    if weibo_on and weibo_mode not in ("material", "qa"):
+        raise HTTPException(status_code=400, detail="weibo_mode 只能是 material 或 qa")
 
     dims: list[dict[str, Any]] = []
     if annotate_type in ("MULTI_DIM", "CONVERSATION"):
@@ -753,8 +765,8 @@ async def upload_manual_task(
         raise HTTPException(status_code=400, detail="文件超过 50MB 限制")
 
     weibo_rows: list[dict[str, str]] = []
-    if weibo_mode:
-        units, weibo_rows = _build_weibo_units(raw, file.filename or "")
+    if weibo_on:
+        units, weibo_rows = _build_weibo_units(raw, file.filename or "", weibo_mode)
     else:
         units = _build_units(annotate_type, raw, file.filename or "")
 
@@ -780,9 +792,10 @@ async def upload_manual_task(
         "summary": None,
         "report": None,
     }
-    if weibo_mode:
+    if weibo_on:
         mt.update(
             is_weibo=True,
+            weibo_mode=weibo_mode,
             convert_status="CONVERTING",
             convert_total=len(weibo_rows),
             convert_done=0,
@@ -831,9 +844,12 @@ def manual_retry_conversion(mt_id: str) -> dict[str, Any]:
     if mt.get("convert_status") not in ("PARTIAL", "FAILED"):
         raise HTTPException(status_code=400, detail="仅部分失败 / 转换失败的任务可重试")
     if mt.get("convert_status") == "FAILED":
-        retry = [{"mid": u["mid"], "content": u.get("content", "")} for u in mt["units"]]
+        retry = [{"mid": u["mid"], "content": u.get("content", ""), "query": u.get("asked_query", "")} for u in mt["units"]]
     else:
-        retry = [{"mid": u["mid"], "content": u.get("content", "")} for u in mt["units"] if u.get("material_status") != "OK"]
+        retry = [
+            {"mid": u["mid"], "content": u.get("content", ""), "query": u.get("asked_query", "")}
+            for u in mt["units"] if u.get("material_status") != "OK"
+        ]
     if not retry:
         raise HTTPException(status_code=400, detail="没有需要重试的 mid")
     with _lock():

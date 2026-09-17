@@ -286,10 +286,13 @@ def test_duplicate_name_rejected():
     assert ei.value.status_code == 400
 
 
-def _fake_parse_weibo(raw: bytes, filename: str):
+def _fake_parse_weibo(raw: bytes, filename: str, with_query: bool = False):
     rows = []
     for r in csv.DictReader(io.StringIO(raw.decode("utf-8"))):
-        rows.append({"mid": r.get("mid", ""), "content": r.get("智搜结果", r.get("content", ""))})
+        row = {"mid": r.get("mid", ""), "content": r.get("智搜结果", r.get("内容", r.get("content", "")))}
+        if with_query:
+            row["query"] = r.get("query", "")
+        rows.append(row)
     return rows, []
 
 
@@ -309,6 +312,7 @@ def test_weibo_manual_upload_converts_and_annotates(monkeypatch):
             report_template_id="",
             report_model="gpt-4.1",
             is_weibo="true",
+            weibo_mode="material",
             file=_File("mid,智搜结果\n5031234567890,结果A\n509999,结果B\n"),
         )
     )
@@ -325,6 +329,39 @@ def test_weibo_manual_upload_converts_and_annotates(monkeypatch):
     assert task["units"][0]["content"] == "结果A"
 
 
+def test_weibo_manual_qa_mode_combines_material_and_query(monkeypatch):
+    """weibo_mode=qa：文件已有现成 query/content，物料只是补充上下文，拼进最终 query。"""
+    from backend import weibo
+
+    manual._ctx["parse_weibo_rows"] = _fake_parse_weibo
+    monkeypatch.setattr(weibo.config, "WEIBO_CONVERT_STUB", True)
+
+    mt = asyncio.run(
+        manual.upload_manual_task(
+            name="博文问答标注",
+            description="",
+            annotate_type="MULTI_DIM",
+            dimensions=json.dumps([{"name": "准确性", "weight": 100}]),
+            gsb_swap_sides="false",
+            report_template_id="",
+            report_model="gpt-4.1",
+            is_weibo="true",
+            weibo_mode="qa",
+            file=_File("mid,query,内容\n5031234567890,这些角色出自哪部作品,来自XX剧\n"),
+        )
+    )
+    mid = mt["id"]
+    for _ in range(40):
+        if manual._find(mid).get("convert_status") != "CONVERTING":
+            break
+        time.sleep(0.05)
+    unit = manual._find(mid)["units"][0]
+    assert unit["asked_query"] == "这些角色出自哪部作品"
+    assert unit["content"] == "来自XX剧"
+    assert "占位物料" in unit["query"]
+    assert "【用户问题】这些角色出自哪部作品" in unit["query"]
+
+
 def test_weibo_manual_rejects_non_multidim():
     manual._ctx["parse_weibo_rows"] = _fake_parse_weibo
     with pytest.raises(HTTPException) as ei:
@@ -332,7 +369,7 @@ def test_weibo_manual_rejects_non_multidim():
             manual.upload_manual_task(
                 name="x", description="", annotate_type="GSB", dimensions="[]",
                 gsb_swap_sides="false", report_template_id="", report_model="gpt-4.1",
-                is_weibo="true", file=_File("mid,智搜结果\n5031234567890,a\n"),
+                is_weibo="true", weibo_mode="material", file=_File("mid,智搜结果\n5031234567890,a\n"),
             )
         )
     assert ei.value.status_code == 400
