@@ -1651,8 +1651,38 @@ export function TaskReportPage({ id, navigate }) {
 
 /* ---------------- 数据集 ---------------- */
 
-function ExamplePreview({ rows, evalMethod, weibo, weiboMode }) {
+function ExamplePreview({ rows, evalMethod, weibo, weiboMode, conversation }) {
   if (!rows) return null;
+  if (conversation) {
+    return (
+      <div className="table-wrap mt-8">
+        <table className="table">
+          <thead>
+            <tr>
+              <th>session_id</th>
+              <th>conversation_id</th>
+              <th>会话时间</th>
+              <th>query类型</th>
+              <th>query</th>
+              <th>回答</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r, i) => (
+              <tr key={i}>
+                <td>{r.session_id}</td>
+                <td>{r.conversation_id}</td>
+                <td>{r["会话时间"]}</td>
+                <td>{r["query类型"]}</td>
+                <td>{r.query}</td>
+                <td>{r["回答"]}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    );
+  }
   if (weibo && weiboMode === "qa") {
     return (
       <div className="table-wrap mt-8">
@@ -1739,6 +1769,7 @@ function CreateDatasetModal({ open, onClose, onCreated, methodOptions }) {
   const [showExample, setShowExample] = useState(false);
   const [isWeibo, setIsWeibo] = useState(false);
   const [weiboMode, setWeiboMode] = useState("material");
+  const [isConversation, setIsConversation] = useState(false);
 
   const allMethodOptions = useMemo(() => {
     const map = new Map();
@@ -1766,6 +1797,7 @@ function CreateDatasetModal({ open, onClose, onCreated, methodOptions }) {
     setShowExample(false);
     setIsWeibo(false);
     setWeiboMode("material");
+    setIsConversation(false);
   }, [open]);
 
   useEffect(() => {
@@ -1773,16 +1805,26 @@ function CreateDatasetModal({ open, onClose, onCreated, methodOptions }) {
     setShowExample(false);
     setFile(null);
     setErrors([]);
-  }, [mechanism, isWeibo, weiboMode]);
+  }, [mechanism, isWeibo, weiboMode, isConversation]);
 
-  // 博文数据仅支持多维度评估
+  // 博文数据 / 多轮会话数据仅支持多维度评估，且两者互斥
   useEffect(() => {
-    if (isWeibo) {
+    if (isWeibo || isConversation) {
       setMechanism("MULTI_DIM");
       setMethodLabel(BASE_METHOD_OPTIONS[0].label);
       setAddingMethod(false);
     }
-  }, [isWeibo]);
+  }, [isWeibo, isConversation]);
+
+  function toggleWeibo(checked) {
+    setIsWeibo(checked);
+    if (checked) setIsConversation(false);
+  }
+
+  function toggleConversation(checked) {
+    setIsConversation(checked);
+    if (checked) setIsWeibo(false);
+  }
 
   function selectMethod(value) {
     if (value === "__add__") {
@@ -1812,7 +1854,7 @@ function CreateDatasetModal({ open, onClose, onCreated, methodOptions }) {
       return;
     }
     try {
-      const qs = isWeibo ? `weibo=1&weibo_mode=${weiboMode}` : `eval_method=${mechanism}`;
+      const qs = isConversation ? "conversation=1" : isWeibo ? `weibo=1&weibo_mode=${weiboMode}` : `eval_method=${mechanism}`;
       const res = await fetch(`/api/datasets/template?${qs}`);
       const text = await res.text();
       const lines = text.trim().split("\n");
@@ -1829,8 +1871,12 @@ function CreateDatasetModal({ open, onClose, onCreated, methodOptions }) {
   }
 
   function downloadTemplate() {
-    const qs = isWeibo ? `weibo=1&weibo_mode=${weiboMode}` : `eval_method=${mechanism}`;
-    const filename = isWeibo ? (weiboMode === "qa" ? "博文问答数据集模板.csv" : "博文数据集模板.csv") : "数据集模板.csv";
+    const qs = isConversation ? "conversation=1" : isWeibo ? `weibo=1&weibo_mode=${weiboMode}` : `eval_method=${mechanism}`;
+    const filename = isConversation
+      ? "多轮会话数据集模板.csv"
+      : isWeibo
+      ? (weiboMode === "qa" ? "博文问答数据集模板.csv" : "博文数据集模板.csv")
+      : "数据集模板.csv";
     downloadFile(`/api/datasets/template?${qs}`, filename).catch((err) => toast.error(err.message));
   }
 
@@ -1851,13 +1897,14 @@ function CreateDatasetModal({ open, onClose, onCreated, methodOptions }) {
       const fd = new FormData();
       fd.append("name", name.trim());
       fd.append("description", description);
-      fd.append("eval_method", isWeibo ? "MULTI_DIM" : mechanism);
-      fd.append("eval_method_label", isWeibo || methodLabel === defaultLabel ? "" : methodLabel);
+      fd.append("eval_method", isWeibo || isConversation ? "MULTI_DIM" : mechanism);
+      fd.append("eval_method_label", isWeibo || isConversation || methodLabel === defaultLabel ? "" : methodLabel);
       fd.append("is_weibo", isWeibo ? "true" : "false");
       fd.append("weibo_mode", weiboMode);
+      fd.append("is_conversation", isConversation ? "true" : "false");
       fd.append("file", file);
       const created = await api.upload("/api/datasets/upload", fd);
-      toast.success(isWeibo ? "数据集已创建，正在解析 mid 物料…" : "数据集已创建");
+      toast.success(isWeibo || isConversation ? "数据集已创建，正在解析 mid 物料…" : "数据集已创建");
       onCreated(created);
     } catch (err) {
       if (err.detail && typeof err.detail === "object" && err.detail.errors) {
@@ -1894,11 +1941,26 @@ function CreateDatasetModal({ open, onClose, onCreated, methodOptions }) {
       </Field>
 
       <Field label="博文数据" hint="勾选后按 mid 解析原始博文、图片、视频等物料，仅支持多维度评估">
-        <label className="inline" style={{ gap: 8, cursor: "pointer" }}>
-          <input type="checkbox" checked={isWeibo} onChange={(e) => setIsWeibo(e.target.checked)} />
+        <label className="inline" style={{ gap: 8, cursor: isConversation ? "not-allowed" : "pointer" }}>
+          <input type="checkbox" checked={isWeibo} disabled={isConversation} onChange={(e) => toggleWeibo(e.target.checked)} />
           <span>将 mid 转换为原始物料</span>
         </label>
       </Field>
+
+      <Field label="多轮会话数据" hint="勾选后按 session_id 分组、按会话时间排序成多轮对话，整段会话打一次分；query类型=mid 的轮次自动解析成博文原文替换该轮 query，仅支持多维度评估">
+        <label className="inline" style={{ gap: 8, cursor: isWeibo ? "not-allowed" : "pointer" }}>
+          <input type="checkbox" checked={isConversation} disabled={isWeibo} onChange={(e) => toggleConversation(e.target.checked)} />
+          <span>上传多轮会话（session_id/conversation_id/会话时间/query类型/query/回答）</span>
+        </label>
+      </Field>
+
+      {isConversation ? (
+        <Field label="评估方式">
+          <div className="text-tertiary" style={{ fontSize: 13 }}>
+            多轮会话数据固定使用「多维度」评估（整段对话拼接后交给裁判员模型整体打一次分）
+          </div>
+        </Field>
+      ) : null}
 
       {isWeibo ? (
         <Field label="物料用途" required hint="决定上传文件的列 + 物料怎么参与评估">
@@ -1921,7 +1983,7 @@ function CreateDatasetModal({ open, onClose, onCreated, methodOptions }) {
             博文数据固定使用「多维度」评估（{weiboMode === "qa" ? "query = 物料 + 文件里的 query，content = 文件里的回答" : "query = 解析出的物料，content = 智搜结果"}）
           </div>
         </Field>
-      ) : (
+      ) : isConversation ? null : (
         <Field label="评估方式" required hint="决定数据集必需列：多维度机制需要 query/content；GSB 机制额外需要 baseline">
           <select className="select" value={methodLabel} onChange={(e) => selectMethod(e.target.value)}>
             {allMethodOptions.map((o) => (
@@ -1934,7 +1996,7 @@ function CreateDatasetModal({ open, onClose, onCreated, methodOptions }) {
         </Field>
       )}
 
-      {addingMethod && !isWeibo ? (
+      {addingMethod && !isWeibo && !isConversation ? (
         <div className="card" style={{ padding: 14 }}>
           <Field label="新评估方式名称" required>
             <input className="input" value={newMethodName} onChange={(e) => setNewMethodName(e.target.value)} placeholder="如：语义相似度评估" maxLength={20} />
@@ -1970,7 +2032,9 @@ function CreateDatasetModal({ open, onClose, onCreated, methodOptions }) {
           {showExample ? "收起样例" : "查看数据集样例"}
         </Button>
       </div>
-      {showExample ? <ExamplePreview rows={exampleRows} evalMethod={mechanism} weibo={isWeibo} weiboMode={weiboMode} /> : null}
+      {showExample ? (
+        <ExamplePreview rows={exampleRows} evalMethod={mechanism} weibo={isWeibo} weiboMode={weiboMode} conversation={isConversation} />
+      ) : null}
       <Dropzone
         accept=".csv,.json,.jsonl,.xlsx"
         onFile={(f) => {
@@ -1979,7 +2043,9 @@ function CreateDatasetModal({ open, onClose, onCreated, methodOptions }) {
           setMessage("");
         }}
         hint={
-          isWeibo
+          isConversation
+            ? "列：session_id、conversation_id、会话时间、query类型、query、回答 · CSV / JSON / JSONL / XLSX · ≤ 50MB"
+            : isWeibo
             ? weiboMode === "qa"
               ? "三列：mid、query、内容 · CSV / JSON / JSONL / XLSX · ≤ 50MB"
               : "两列：mid、智搜结果 · CSV / JSON / JSONL / XLSX · ≤ 50MB"
@@ -2249,25 +2315,32 @@ export function DatasetDetailPage({ id, navigate }) {
   }
 
   const isWeiboQa = d.is_weibo && d.weibo_mode === "qa";
-  const sampleColumns = [
-    { key: "row_index", title: "#", width: 52 },
-    ...(d.is_weibo ? [{ key: "mid", title: "mid", width: 150, render: (s) => <span className="mono">{s.mid}</span> }] : []),
-    ...(isWeiboQa ? [{ key: "asked_query", title: "用户问题" }] : []),
-    { key: "query", title: d.is_weibo ? (isWeiboQa ? "物料+问题（Query）" : "物料（Query）") : "Query" },
-    { key: "content", title: d.is_weibo ? (isWeiboQa ? "回答（待评）" : "智搜结果（待评）") : "待评内容" },
-    ...(d.is_weibo
-      ? [{
-          key: "material_status",
-          title: "物料",
-          width: 80,
-          render: (s) =>
-            s.material_status === "OK" ? <Badge tone="success">已解析</Badge>
-            : s.material_status === "FAILED" ? <Badge tone="danger">失败</Badge>
-            : <Badge tone="outline">待转换</Badge>,
-        }]
-      : []),
-    ...(d.eval_method === "GSB" ? [{ key: "baseline", title: "基线内容" }] : []),
-  ];
+  const sampleColumns = d.is_conversation
+    ? [
+        { key: "row_index", title: "#", width: 52 },
+        { key: "session_id", title: "session_id", width: 160, render: (s) => <span className="mono">{s.session_id}</span> },
+        { key: "turns", title: "轮数", width: 60, render: (s) => (s.turns || []).length },
+        { key: "query", title: "完整对话" },
+      ]
+    : [
+        { key: "row_index", title: "#", width: 52 },
+        ...(d.is_weibo ? [{ key: "mid", title: "mid", width: 150, render: (s) => <span className="mono">{s.mid}</span> }] : []),
+        ...(isWeiboQa ? [{ key: "asked_query", title: "用户问题" }] : []),
+        { key: "query", title: d.is_weibo ? (isWeiboQa ? "物料+问题（Query）" : "物料（Query）") : "Query" },
+        { key: "content", title: d.is_weibo ? (isWeiboQa ? "回答（待评）" : "智搜结果（待评）") : "待评内容" },
+        ...(d.is_weibo
+          ? [{
+              key: "material_status",
+              title: "物料",
+              width: 80,
+              render: (s) =>
+                s.material_status === "OK" ? <Badge tone="success">已解析</Badge>
+                : s.material_status === "FAILED" ? <Badge tone="danger">失败</Badge>
+                : <Badge tone="outline">待转换</Badge>,
+            }]
+          : []),
+        ...(d.eval_method === "GSB" ? [{ key: "baseline", title: "基线内容" }] : []),
+      ];
 
   return (
     <div className="content">
@@ -2298,7 +2371,7 @@ export function DatasetDetailPage({ id, navigate }) {
         </div>
       </div>
 
-      {d.is_weibo ? (
+      {d.is_weibo || d.is_conversation ? (
         <section className="card" style={{ marginBottom: 16 }}>
           <div className="toolbar" style={{ padding: 0 }}>
             <h3 className="card-title" style={{ margin: 0 }}>mid 物料转换</h3>
@@ -2327,9 +2400,9 @@ export function DatasetDetailPage({ id, navigate }) {
             ) : d.convert_status === "FAILED" ? (
               <p className="card-sub" style={{ color: "var(--danger)" }}>转换失败：{d.convert_error || "未知错误"}</p>
             ) : d.convert_status === "PARTIAL" ? (
-              <p className="card-sub">部分完成：{d.total_items - d.convert_failed_count}/{d.total_items} 条成功，{d.convert_failed_count} 条失败（失败项以空物料占位保留）。</p>
+              <p className="card-sub">部分完成：{d.convert_total - d.convert_failed_count}/{d.convert_total} 条成功，{d.convert_failed_count} 条失败（失败项以空物料占位保留）。</p>
             ) : (
-              <p className="card-sub">全部 {d.total_items} 条 mid 物料已解析完成。</p>
+              <p className="card-sub">全部 {d.convert_total} 条 mid 物料已解析完成。</p>
             )}
           </div>
         </section>
