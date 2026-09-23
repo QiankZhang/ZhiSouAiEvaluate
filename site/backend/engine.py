@@ -121,6 +121,13 @@ def build_system_prompt(benchmark: dict[str, Any], skill: Optional[dict[str, Any
 
 
 def _user_message(item: dict[str, Any], is_gsb: bool) -> str:
+    if item.get("turns"):
+        lines = ["以下是一段完整的多轮对话（User 为用户提问，Assistant 为助手回答），请基于完整上下文对这段会话的整体质量打一次分：\n"]
+        for t in item["turns"]:
+            role_label = "User" if t.get("role") == "user" else "Assistant"
+            lines.append(f"{role_label}：{t.get('content', '')}")
+        lines.append("\n请依据已加载的说明完成本条评估，只输出约定的 JSON 对象。")
+        return "\n".join(lines)
     parts = [f"查询（query）：\n{item.get('query', '')}", f"\n待评内容（实验对象）：\n{item.get('content', '')}"]
     if is_gsb:
         parts.append(f"\n基线内容（基线对象）：\n{item.get('baseline', '')}")

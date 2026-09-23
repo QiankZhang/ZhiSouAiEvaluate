@@ -68,6 +68,17 @@ WEIBO_COLUMN_ALIASES = {
     "query": {"query", "问题", "查询", "提问", "追问", "prompt", "question", "q"},
 }
 
+# 多轮会话数据集：session_id 分组、按会话时间排序的多轮 query/回答；query类型=mid 的轮次
+# 复用博文数据集同一套 weibo.convert_rows 把 mid 解析成物料，替换该轮 query（见 _create_conversation_dataset）。
+CONVERSATION_COLUMN_ALIASES = {
+    "session_id": {"session_id", "会话id", "会话", "sessionid"},
+    "conversation_id": {"conversation_id", "对话id", "conversationid", "对话"},
+    "time": {"会话时间", "时间", "time", "timestamp"},
+    "type": {"query类型", "类型", "type", "querytype"},
+    "query": {"query", "问题", "查询", "提问"},
+    "answer": {"回答", "答案", "content", "answer", "response"},
+}
+
 
 def _normalize_col(name: Any) -> str:
     return re.sub(r"[\s（）()【】\-_:：]", "", str(name)).strip().lower()
@@ -659,13 +670,18 @@ def _tasks_using_benchmark(benchmark_id: str) -> list[dict[str, Any]]:
 def _dataset_to_csv(dataset: dict[str, Any]) -> str:
     if dataset.get("is_weibo"):
         fieldnames = ["row_index", "mid", "asked_query", "material_status", "query", "content"]
+    elif dataset.get("is_conversation"):
+        fieldnames = ["row_index", "session_id", "turns", "query"]
     else:
         fieldnames = ["row_index", "query", "content"] + (["baseline"] if dataset["eval_method"] == "GSB" else [])
     buf = io.StringIO()
     writer = csv.DictWriter(buf, fieldnames=fieldnames, extrasaction="ignore")
     writer.writeheader()
     for row in dataset["samples"]:
-        writer.writerow({k: row.get(k, "") for k in fieldnames})
+        out_row = dict(row)
+        if dataset.get("is_conversation"):
+            out_row["turns"] = len(row.get("turns", []))
+        writer.writerow({k: out_row.get(k, "") for k in fieldnames})
     return buf.getvalue()
 
 
@@ -870,6 +886,162 @@ def _resolve_weibo_field_map(keys: list[str], fields: tuple[str, ...] = ("mid", 
         if canon not in field_map and leftover:
             field_map[canon] = leftover.pop(0)
     return field_map
+
+
+def _resolve_conversation_field_map(keys: list[str]) -> dict[str, str]:
+    """按别名识别多轮会话上传的列；找不到就不映射（不像 mid 两列场景那样兜底按顺序对应，
+    列数多，兜底容易错位，缺列直接报错更安全）。"""
+    fields = ("session_id", "conversation_id", "time", "type", "query", "answer")
+    norm_alias = {c: {_normalize_col(a) for a in al} for c, al in CONVERSATION_COLUMN_ALIASES.items()}
+    field_map: dict[str, str] = {}
+    used: set[str] = set()
+    for key in keys:
+        norm = _normalize_col(key)
+        for canon in fields:
+            if canon not in field_map and (norm == canon or norm in norm_alias[canon]):
+                field_map[canon] = key
+                used.add(key)
+                break
+    return field_map
+
+
+def _parse_conversation_turn_rows(raw: bytes, filename: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """解析多轮会话数据集上传，返回逐行 (合法行, 错误列表)。
+    列：session_id / conversation_id / 会话时间 / query类型 / query / 回答（会话轮数可选，仅展示不校验）。
+    query类型=mid 的行，query 此时仍是原始 mid，替换成解析物料在 _create_conversation_dataset 里异步完成。"""
+    lower = (filename or "").lower()
+    errors: list[dict[str, Any]] = []
+    raw_rows: list[tuple[int, dict[str, Any]]] = []
+
+    if lower.endswith(".xlsx"):
+        try:
+            header, data_rows = _parse_xlsx_rows(raw)
+        except Exception as exc:  # noqa: BLE001
+            return [], [{"line": 0, "message": f"Excel 文件解析失败（{exc}）"}]
+        if not header:
+            return [], [{"line": 1, "message": "未识别到表头，请使用模板中的列名"}]
+        for i, row in enumerate(data_rows, start=2):
+            raw_rows.append((i, {header[j]: ("" if j >= len(row) or row[j] is None else str(row[j])) for j in range(len(header))}))
+    elif lower.endswith(".xls"):
+        return [], [{"line": 0, "message": "暂不支持旧版 .xls，请另存为 .xlsx 或 .csv"}]
+    else:
+        try:
+            text = raw.decode("utf-8-sig")
+        except UnicodeDecodeError:
+            return [], [{"line": 0, "message": "文件编码不支持，请使用 UTF-8"}]
+        if lower.endswith(".jsonl"):
+            for i, line in enumerate(text.splitlines(), start=1):
+                if line.strip():
+                    try:
+                        raw_rows.append((i, json.loads(line)))
+                    except json.JSONDecodeError as exc:
+                        errors.append({"line": i, "message": f"JSON 解析失败：{exc.msg}"})
+        elif lower.endswith(".json"):
+            try:
+                payload = json.loads(text)
+            except json.JSONDecodeError as exc:
+                return [], [{"line": exc.lineno, "message": f"JSON 解析失败：{exc.msg}"}]
+            if not isinstance(payload, list):
+                return [], [{"line": 1, "message": "JSON 根节点必须是数组"}]
+            for i, item in enumerate(payload, start=1):
+                raw_rows.append((i + 1, item if isinstance(item, dict) else {}))
+        elif lower.endswith(".csv"):
+            reader = csv.DictReader(io.StringIO(text))
+            if not reader.fieldnames:
+                return [], [{"line": 1, "message": "未识别到表头，请使用模板中的列名"}]
+            for i, row in enumerate(reader, start=2):
+                raw_rows.append((i, row))
+        else:
+            return [], [{"line": 0, "message": "不支持的格式，请上传 CSV / JSON / JSONL / XLSX"}]
+
+    if not raw_rows and not errors:
+        return [], [{"line": 0, "message": "文件中没有可用数据行"}]
+
+    field_map = _resolve_conversation_field_map(list(raw_rows[0][1].keys()) if raw_rows else [])
+    missing_required = [c for c in ("session_id", "query", "answer") if c not in field_map]
+    if missing_required:
+        labels = {"session_id": "session_id", "query": "query", "answer": "回答"}
+        return [], [{"line": 1, "message": f"未识别到必需列：{'、'.join(labels[c] for c in missing_required)}"}]
+
+    rows: list[dict[str, Any]] = []
+    for order, (line_no, row) in enumerate(raw_rows):
+        session_id = str(row.get(field_map["session_id"], "") or "").strip()
+        query = str(row.get(field_map["query"], "") or "").strip()
+        answer = str(row.get(field_map["answer"], "") or "").strip()
+        if not session_id or not query or not answer:
+            errors.append({"line": line_no, "message": "缺少必填字段：session_id / query / 回答"})
+            continue
+        qtype = str(row.get(field_map.get("type", ""), "") or "").strip().lower()
+        is_mid = qtype == "mid"
+        if is_mid:
+            _valid, invalid = weibo.normalize_mids([query])
+            if invalid:
+                errors.append({"line": line_no, "message": f"query类型=mid 但内容不是合法 mid：{query}"})
+                continue
+        rows.append({
+            "line": line_no,
+            "order": order,
+            "session_id": session_id,
+            "conversation_id": str(row.get(field_map.get("conversation_id", ""), "") or "").strip(),
+            "time": str(row.get(field_map.get("time", ""), "") or "").strip(),
+            "is_mid": is_mid,
+            "query": query,
+            "answer": answer,
+        })
+    return rows, errors
+
+
+def _parse_conversation_time(value: str) -> Optional[datetime]:
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y/%m/%d %H:%M:%S", "%Y/%m/%d %H:%M"):
+        try:
+            return datetime.strptime(value, fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def _render_conversation_text(turns: list[dict[str, Any]]) -> str:
+    lines = []
+    for t in turns:
+        role_label = "User" if t.get("role") == "user" else "Assistant"
+        lines.append(f"{role_label}：{t.get('content', '')}")
+    return "\n".join(lines)
+
+
+def _group_conversation_sessions(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """按 session_id 分组，组内按 (会话时间, conversation_id, 原始行序) 排序，
+    展开成 user/assistant 交替的 turns；query类型=mid 的轮次先占位（is_mid/mid），
+    等 _run_conversation_conversion 异步解析物料后再替换 content。"""
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for r in rows:
+        grouped.setdefault(r["session_id"], []).append(r)
+
+    sessions: list[dict[str, Any]] = []
+    for session_id, items in grouped.items():
+        items_sorted = sorted(
+            items,
+            key=lambda r: (_parse_conversation_time(r["time"]) or datetime.max, r["conversation_id"], r["order"]),
+        )
+        turns: list[dict[str, Any]] = []
+        mid_turns: list[dict[str, Any]] = []
+        for r in items_sorted:
+            user_turn: dict[str, Any] = {"turn": len(turns) + 1, "role": "user", "content": r["query"]}
+            if r["is_mid"]:
+                user_turn["is_mid"] = True
+                user_turn["mid"] = r["query"]
+                mid_turns.append({"turn": user_turn["turn"], "mid": r["query"], "status": "PENDING"})
+            turns.append(user_turn)
+            turns.append({"turn": len(turns) + 1, "role": "assistant", "content": r["answer"]})
+        sessions.append({"session_id": session_id, "turns": turns, "mid_turns": mid_turns})
+    return sessions
+
+
+def _parse_conversation_upload_rows(raw: bytes, filename: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """多轮会话数据集上传入口：解析 + 分组排序，返回 (会话列表, 错误列表)。"""
+    rows, errors = _parse_conversation_turn_rows(raw, filename)
+    if errors:
+        return [], errors
+    return _group_conversation_sessions(rows), []
 
 
 def _failed_result(sample: dict[str, Any], benchmark: dict[str, Any], err: str) -> dict[str, Any]:
@@ -1124,6 +1296,128 @@ def _run_mid_retry(dataset_id: str, retry_rows: list[dict[str, str]]) -> None:
     threading.Thread(target=run, daemon=True).start()
 
 
+def _apply_conversation_mid_results(dataset: dict[str, Any], by_mid: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    """把 mid 解析结果回填到各 session 对应轮次的 content，重拼 query 全文；返回仍失败的明细。
+    by_mid 只包含本次实际尝试解析的 mid（重试时是失败子集）——不在 by_mid 里的轮次维持原状态，
+    避免重试时把之前已解析成功、这次没重跑的 mid 误标成失败。"""
+    failed_list: list[dict[str, Any]] = []
+    for sess in dataset["samples"]:
+        for turn in sess["turns"]:
+            if not turn.get("is_mid"):
+                continue
+            got = by_mid.get(turn["mid"])
+            if got and got.get("material_status") == "OK":
+                turn["content"] = got["query"]
+        for mt in sess.get("mid_turns", []):
+            if mt["mid"] in by_mid:
+                got = by_mid[mt["mid"]]
+                mt["status"] = "OK" if got.get("material_status") == "OK" else "FAILED"
+            if mt["status"] != "OK":
+                failed_list.append({"session_id": sess["session_id"], "turn": mt["turn"], "mid": mt["mid"], "error": "解析失败"})
+        sess["query"] = _render_conversation_text(sess["turns"])
+    return failed_list
+
+
+def _run_conversation_conversion(dataset_id: str, mids_rows: list[dict[str, str]]) -> None:
+    """后台线程：多轮会话数据集里 query类型=mid 的轮次调 qinglong 解析成物料，回填对应轮次。"""
+    log = logging.getLogger(__name__)
+
+    def progress_cb(done: int, phase: str) -> None:
+        with _lock:
+            try:
+                d = _find_dataset(dataset_id)
+            except HTTPException:
+                return
+            d["convert_done"] = done
+            d["convert_phase"] = phase
+
+    def run() -> None:
+        try:
+            samples, _failed = weibo.convert_rows(mids_rows, progress_cb=progress_cb, log=log)
+        except weibo.WeiboConvertError as exc:
+            with _lock:
+                try:
+                    d = _find_dataset(dataset_id)
+                except HTTPException:
+                    return
+                d["convert_status"] = "FAILED"
+                d["status"] = "FAILED"
+                d["convert_error"] = str(exc)
+            return
+        except Exception as exc:  # noqa: BLE001 - 兜底，避免线程静默退出留下永久 CONVERTING
+            log.exception("会话数据集 %s mid 转换异常", dataset_id)
+            with _lock:
+                try:
+                    d = _find_dataset(dataset_id)
+                except HTTPException:
+                    return
+                d["convert_status"] = "FAILED"
+                d["status"] = "FAILED"
+                d["convert_error"] = f"转换异常：{exc}"
+            return
+
+        by_mid = {s["mid"]: s for s in samples}
+        with _lock:
+            try:
+                d = _find_dataset(dataset_id)
+            except HTTPException:
+                return
+            failed_list = _apply_conversation_mid_results(d, by_mid)
+            d["total_chars"] = _chars(d["samples"])
+            d["convert_done"] = len(mids_rows)
+            d["convert_failed"] = failed_list
+            d["convert_status"] = "PARTIAL" if failed_list else "READY"
+            d["status"] = "READY"
+            d["convert_error"] = ""
+
+    threading.Thread(target=run, daemon=True).start()
+
+
+def _run_conversation_retry(dataset_id: str, retry_rows: list[dict[str, str]]) -> None:
+    """只对失败 mid 重跑，把新结果回填到对应 session/轮次。"""
+    log = logging.getLogger(__name__)
+
+    def progress_cb(done: int, phase: str) -> None:
+        with _lock:
+            try:
+                d = _find_dataset(dataset_id)
+            except HTTPException:
+                return
+            d["convert_done"] = done
+            d["convert_phase"] = phase
+
+    def run() -> None:
+        try:
+            new_samples, _failed = weibo.convert_rows(retry_rows, progress_cb=progress_cb, log=log)
+        except Exception as exc:  # noqa: BLE001
+            log.exception("会话数据集 %s 重试转换异常", dataset_id)
+            with _lock:
+                try:
+                    d = _find_dataset(dataset_id)
+                except HTTPException:
+                    return
+                d["convert_status"] = "PARTIAL" if (d.get("convert_failed") or []) else "READY"
+                d["status"] = "READY"
+                d["convert_error"] = f"重试异常：{exc}"
+            return
+
+        by_mid = {s["mid"]: s for s in new_samples}
+        with _lock:
+            try:
+                d = _find_dataset(dataset_id)
+            except HTTPException:
+                return
+            failed_list = _apply_conversation_mid_results(d, by_mid)
+            d["convert_failed"] = failed_list
+            d["total_chars"] = _chars(d["samples"])
+            d["convert_done"] = d.get("convert_total", len(retry_rows))
+            d["convert_status"] = "PARTIAL" if failed_list else "READY"
+            d["status"] = "READY"
+            d["convert_error"] = ""
+
+    threading.Thread(target=run, daemon=True).start()
+
+
 # ---- 路由 ----
 
 
@@ -1214,7 +1508,7 @@ def _dataset_out(d: dict[str, Any]) -> dict[str, Any]:
     out = _public_dataset(d)
     out["used_by_tasks"] = len(_tasks_using_dataset(d["id"]))
     out["eval_method_display"] = _method_display(d)
-    if d.get("is_weibo"):
+    if d.get("is_weibo") or d.get("is_conversation"):
         failed = d.get("convert_failed") or []
         out["convert_failed"] = failed[:20]
         out["convert_failed_count"] = len(failed)
@@ -1291,11 +1585,26 @@ _WEIBO_QA_TEMPLATE_ROWS = [
     {"mid": "5031234567890123", "query": "示例：针对该博文的提问。", "内容": "示例：这里填写针对该提问的回答（待评内容）。"},
     {"mid": "5039876543210987", "query": "示例：第二条提问。", "内容": "示例：第二条回答。"},
 ]
+_CONVERSATION_TEMPLATE_ROWS = [
+    {"session_id": "s-1", "conversation_id": "c-1", "会话时间": "2026-09-09 12:08:16", "query类型": "mid",
+     "query": "5340208260189424", "回答": "关于这条微博，你需要我帮你做什么？", "会话轮数": "2"},
+    {"session_id": "s-1", "conversation_id": "c-2", "会话时间": "2026-09-09 12:09:00", "query类型": "",
+     "query": "详细总结这篇微博的评论内容", "回答": "示例：评论区整体呈现哀悼与祈福基调……", "会话轮数": "2"},
+]
+_CONVERSATION_TEMPLATE_FIELDS = ["session_id", "conversation_id", "会话时间", "query类型", "query", "回答", "会话轮数"]
 
 
 @app.get("/api/datasets/template")
-def dataset_template(eval_method: str = "MULTI_DIM", weibo: int = 0, weibo_mode: str = "material") -> Response:
-    if weibo and weibo_mode == "qa":
+def dataset_template(
+    eval_method: str = "MULTI_DIM", weibo: int = 0, weibo_mode: str = "material", conversation: int = 0
+) -> Response:
+    if conversation:
+        buf = io.StringIO()
+        writer = csv.DictWriter(buf, fieldnames=_CONVERSATION_TEMPLATE_FIELDS)
+        writer.writeheader()
+        writer.writerows(_CONVERSATION_TEMPLATE_ROWS)
+        csv_text, filename = buf.getvalue(), "多轮会话数据集模板.csv"
+    elif weibo and weibo_mode == "qa":
         buf = io.StringIO()
         writer = csv.DictWriter(buf, fieldnames=["mid", "query", "内容"])
         writer.writeheader()
@@ -1325,6 +1634,7 @@ async def upload_dataset(
     eval_method_label: str = Form(""),
     is_weibo: bool = Form(False),
     weibo_mode: str = Form("material"),
+    is_conversation: bool = Form(False),
     file: UploadFile = File(...),
 ) -> dict[str, Any]:
     if not name.strip():
@@ -1338,6 +1648,8 @@ async def upload_dataset(
 
     if is_weibo:
         return _create_weibo_dataset(name, description, fmt, raw, file.filename or "", weibo_mode)
+    if is_conversation:
+        return _create_conversation_dataset(name, description, fmt, raw, file.filename or "")
 
     rows, errors = _parse_upload_rows(raw, file.filename or "", eval_method)
     if errors:
@@ -1437,6 +1749,63 @@ def _create_weibo_dataset(
     return _dataset_out(dataset)
 
 
+def _create_conversation_dataset(name: str, description: str, fmt: str, raw: bytes, filename: str) -> dict[str, Any]:
+    """多轮会话数据集：按 session_id 分组、按会话时间排好序的多轮 query/回答；
+    query类型=mid 的轮次异步调 qinglong 解析成博文物料替换该轮 query（与博文数据集共用 weibo.convert_rows）。
+    整段会话作为一条 sample，交给裁判员模型整体打一次分（eval_method 固定 MULTI_DIM）。"""
+    sessions, errors = _parse_conversation_upload_rows(raw, filename)
+    if errors:
+        raise HTTPException(status_code=422, detail={"message": "文件校验未通过，请修正后重新上传", "errors": errors[:50]})
+    if not sessions:
+        raise HTTPException(status_code=422, detail={"message": "文件中没有可用的会话数据", "errors": []})
+
+    mid_list: list[str] = []
+    seen: set[str] = set()
+    for s in sessions:
+        for mt in s["mid_turns"]:
+            if mt["mid"] not in seen:
+                seen.add(mt["mid"])
+                mid_list.append(mt["mid"])
+    if len(mid_list) > config.WEIBO_MID_MAX:
+        raise HTTPException(status_code=422, detail={"message": f"mid 数超过上限（{config.WEIBO_MID_MAX}）", "errors": []})
+
+    for i, s in enumerate(sessions):
+        s["id"] = f"item-{i + 1}"
+        s["row_index"] = i + 1
+        s["content"] = ""
+        s["query"] = "" if s["mid_turns"] else _render_conversation_text(s["turns"])
+
+    has_pending = bool(mid_list)
+    did = _next_id("DS")
+    dataset = {
+        "id": did,
+        "name": name.strip(),
+        "description": description,
+        "source": "CONVERSATION",
+        "is_conversation": True,
+        "eval_method": "MULTI_DIM",
+        "eval_method_label": "",
+        "format": fmt,
+        "total_items": len(sessions),
+        "total_chars": _chars(sessions),
+        "status": "CONVERTING" if has_pending else "READY",
+        "convert_status": "CONVERTING" if has_pending else "READY",
+        "convert_total": len(mid_list),
+        "convert_done": 0,
+        "convert_phase": "抓取物料",
+        "convert_failed": [],
+        "convert_error": "",
+        "created_by": accounts.creator_name(),
+        "created_at": now(),
+        "samples": sessions,
+    }
+    with _lock:
+        _datasets.append(dataset)
+    if has_pending:
+        _run_conversation_conversion(did, [{"mid": m, "content": ""} for m in mid_list])
+    return _dataset_out(dataset)
+
+
 @app.get("/api/datasets/{dataset_id}")
 def get_dataset(dataset_id: str) -> dict[str, Any]:
     dataset = _find_dataset(dataset_id)
@@ -1449,8 +1818,8 @@ def get_dataset(dataset_id: str) -> dict[str, Any]:
 @app.get("/api/datasets/{dataset_id}/convert-progress")
 def dataset_convert_progress(dataset_id: str) -> dict[str, Any]:
     d = _find_dataset(dataset_id)
-    if not d.get("is_weibo"):
-        raise HTTPException(status_code=400, detail="非博文数据集")
+    if not (d.get("is_weibo") or d.get("is_conversation")):
+        raise HTTPException(status_code=400, detail="非博文/会话数据集")
     return {
         "status": d.get("status"),
         "convert_status": d.get("convert_status"),
@@ -1466,10 +1835,32 @@ def dataset_convert_progress(dataset_id: str) -> dict[str, Any]:
 @app.post("/api/datasets/{dataset_id}/retry-conversion")
 def retry_dataset_conversion(dataset_id: str) -> dict[str, Any]:
     d = _find_dataset(dataset_id)
-    if not d.get("is_weibo"):
-        raise HTTPException(status_code=400, detail="非博文数据集")
+    if not (d.get("is_weibo") or d.get("is_conversation")):
+        raise HTTPException(status_code=400, detail="非博文/会话数据集")
     if d.get("convert_status") not in ("PARTIAL", "FAILED"):
         raise HTTPException(status_code=400, detail="仅部分失败 / 转换失败的数据集可重试")
+
+    if d.get("is_conversation"):
+        if d.get("convert_status") == "FAILED":
+            mid_list: list[str] = []
+            seen: set[str] = set()
+            for sess in d["samples"]:
+                for mt in sess.get("mid_turns", []):
+                    if mt["mid"] not in seen:
+                        seen.add(mt["mid"])
+                        mid_list.append(mt["mid"])
+        else:
+            mid_list = sorted({f["mid"] for f in (d.get("convert_failed") or [])})
+        retry_rows = [{"mid": m, "content": ""} for m in mid_list]
+        if not retry_rows:
+            raise HTTPException(status_code=400, detail="没有需要重试的 mid")
+        with _lock:
+            d["status"] = "CONVERTING"
+            d["convert_status"] = "CONVERTING"
+            d["convert_phase"] = "抓取物料"
+            d["convert_error"] = ""
+        _run_conversation_retry(dataset_id, retry_rows)
+        return _dataset_out(d)
 
     if d.get("convert_status") == "FAILED":
         retry_mids = [{"mid": s["mid"], "content": s.get("content", ""), "query": s.get("asked_query", "")} for s in d["samples"]]
@@ -1494,13 +1885,22 @@ def retry_dataset_conversion(dataset_id: str) -> dict[str, Any]:
 @app.get("/api/datasets/{dataset_id}/failed-mids")
 def download_failed_mids(dataset_id: str) -> Response:
     d = _find_dataset(dataset_id)
-    if not d.get("is_weibo"):
-        raise HTTPException(status_code=400, detail="非博文数据集")
+    if not (d.get("is_weibo") or d.get("is_conversation")):
+        raise HTTPException(status_code=400, detail="非博文/会话数据集")
     buf = io.StringIO()
-    writer = csv.DictWriter(buf, fieldnames=["mid", "error"])
-    writer.writeheader()
-    for f in d.get("convert_failed") or []:
-        writer.writerow({"mid": f.get("mid", ""), "error": f.get("error", "")})
+    if d.get("is_conversation"):
+        writer = csv.DictWriter(buf, fieldnames=["session_id", "turn", "mid", "error"])
+        writer.writeheader()
+        for f in d.get("convert_failed") or []:
+            writer.writerow({
+                "session_id": f.get("session_id", ""), "turn": f.get("turn", ""),
+                "mid": f.get("mid", ""), "error": f.get("error", ""),
+            })
+    else:
+        writer = csv.DictWriter(buf, fieldnames=["mid", "error"])
+        writer.writeheader()
+        for f in d.get("convert_failed") or []:
+            writer.writerow({"mid": f.get("mid", ""), "error": f.get("error", "")})
     return Response(
         content=buf.getvalue(),
         media_type="text/csv; charset=utf-8",

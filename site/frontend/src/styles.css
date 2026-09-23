@@ -1947,9 +1947,11 @@ a {
 }
 
 .markdown-body .md-media-fallback {
-  display: inline-block;
+  display: block;
+  grid-column: 1 / -1;
   margin: 6px 0;
   font-size: 12px;
+  line-height: 1.5;
   word-break: break-all;
   color: var(--text-secondary);
 }
